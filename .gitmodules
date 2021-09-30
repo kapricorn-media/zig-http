@@ -1,0 +1,6 @@
+[submodule "deps/ziget"]
+	path = deps/ziget
+	url = https://github.com/marler8997/ziget.git
+[submodule "deps/zig-openssl"]
+	path = deps/zig-openssl
+	url = https://github.com/kapricorn-media/zig-openssl
