@@ -1,0 +1,24 @@
+name: verify
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v2
+
+      - name: build
+        run: /home/pi/zig-linux-aarch64-0.9.0-dev.689+507dc1f2e/zig build
+
+      - name: test
+        run: /home/pi/zig-linux-aarch64-0.9.0-dev.689+507dc1f2e/zig build test
