@@ -16,6 +16,7 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v2
+        submodules: 'true'
 
       - name: build
         run: /home/pi/zig-linux-aarch64-0.9.0-dev.689+507dc1f2e/zig build
