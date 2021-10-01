@@ -3,6 +3,87 @@ const std = @import("std");
 const cw = @import("civetweb.zig");
 pub usingnamespace cw;
 
+pub const HttpCode = enum(u32)
+{
+    _200 = 200,
+    _500 = 500,
+};
+
+pub const HttpContentType = enum
+{
+    TextPlain,
+    TextHtml,
+    ApplicationOctetStream,
+};
+
+pub fn writeHttpCode(connection: *cw.mg_connection, code: HttpCode) !void
+{
+    const bufSize = 1024;
+    var buf: [bufSize]u8 = undefined;
+
+    const string = switch (code) {
+        ._200 => "OK",
+        ._500 => "Internal Server Error"
+    };
+    const response = try std.fmt.bufPrint(&buf, "HTTP/1.1 {} {s}\r\n", .{
+        @enumToInt(code),
+        string
+    });
+    const bytes = cw.mg_write(connection, &response[0], response.len);
+    if (bytes != response.len) {
+        return error.mg_write;
+    }
+}
+
+pub fn writeHttpContentType(connection: *cw.mg_connection, contentType: HttpContentType) !void
+{
+    const bufSize = 1024;
+    var buf: [bufSize]u8 = undefined;
+
+    const string = switch (contentType) {
+        .TextPlain              => "text/plain",
+        .TextHtml               => "text/html",
+        .ApplicationOctetStream => "application/octet-stream",
+    };
+    const line = try std.fmt.bufPrint(&buf, "Content-Type: {s}\r\n", .{string});
+    const bytes = cw.mg_write(connection, &line[0], line.len);
+    if (bytes != line.len) {
+        return error.mg_write;
+    }
+}
+
+pub fn writeHttpEndHeader(connection: *cw.mg_connection) !void
+{
+    if (cw.mg_write(connection, "\r\n", 2) != 2) {
+        return error.mg_write;
+    }
+}
+
+const HandlerFunc = fn(connection: *cw.mg_connection, data: ?*c_void) anyerror!void;
+const HandlerFuncRaw = fn(connection: ?*cw.mg_connection, data: ?*c_void) callconv(.C) c_int;
+
+fn getHandlerWrapper(comptime handler: HandlerFunc) HandlerFuncRaw
+{
+    const S = struct {
+        fn handlerWrapper(connection: ?*cw.mg_connection, data: ?*c_void) callconv(.C) c_int
+        {
+            const c = connection orelse {
+                std.log.err("null connection object", .{});
+                return 500;
+            };
+            handler(c, data) catch |err| {
+                std.log.err("handler failed: {}", .{err});
+                writeHttpCode(c, HttpCode._500) catch return 500;
+                writeHttpEndHeader(c) catch return 500;
+                return 500;
+            };
+
+            return 200;
+        }
+    };
+    return S.handlerWrapper;
+}
+
 pub fn start(port: u16, comptime ssl: bool, sslCertPath: [:0]const u8, allocator: *std.mem.Allocator) !*cw.mg_context
 {
     var callbacks: cw.mg_callbacks = undefined;
@@ -46,4 +127,10 @@ pub fn start(port: u16, comptime ssl: bool, sslCertPath: [:0]const u8, allocator
 pub fn stop(context: *cw.mg_context) void
 {
     cw.mg_stop(context);
+}
+
+pub fn setRequestHandler(context: *cw.mg_context, comptime uri: [:0]const u8, comptime handler: HandlerFunc, data: ?*c_void) void
+{
+    const handlerWrapper = getHandlerWrapper(handler);
+    cw.mg_set_request_handler(context, uri, handlerWrapper, data);
 }
