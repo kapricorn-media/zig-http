@@ -5,7 +5,7 @@ const zig_openssl_build = @import("deps/zig-openssl/build.zig");
 pub fn build(b: *std.build.Builder) void
 {
     const target = std.zig.CrossTarget {
-        .cpu_arch = .x86_64,
+        .cpu_arch = null,
         .os_tag = .linux,
         .abi = .gnu,
         .glibc_version = .{
