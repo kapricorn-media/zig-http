@@ -11,6 +11,9 @@ const c = @cImport(@cInclude("unistd.h"));
 const cc = @import("client.zig");
 
 const TEST_PORT = 19191;
+const TEST_HOSTNAME = "127.0.0.1";
+
+// server tests
 
 test "server, no SSL"
 {
@@ -51,37 +54,7 @@ test "server, SSL, no cert, FAIL"
     try expect(false);
 }
 
-// const TRUSTY_URL = "www.google.com";
-
-// test "http GET, trusty URL"
-// {
-//     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
-//     var responseData: std.ArrayList(u8) = undefined;
-//     var response: cc.Response = undefined;
-//     try cc.httpGet(TRUSTY_URL, "/", &gpa.allocator, &responseData, &response);
-//     try expect(response.code == 200);
-//     try expect(std.mem.eql(u8, response.message, "OK"));
-//     try expect(response.body.len > 0);
-
-//     responseData.deinit();
-//     try expect(!gpa.deinit());
-// }
-
-// test "https GET request, trusty URL"
-// {
-//     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
-//     var responseData: std.ArrayList(u8) = undefined;
-//     var response: cc.Response = undefined;
-//     try cc.httpsGet(TRUSTY_URL, "/", &gpa.allocator, &responseData, &response);
-//     try expect(response.code == 200);
-//     try expect(std.mem.eql(u8, response.message, "OK"));
-//     try expect(response.body.len > 0);
-
-//     responseData.deinit();
-//     try expect(!gpa.deinit());
-// }
+// server+client tests
 
 fn handlerNoResponse(connection: *libhttp.mg_connection, data: ?*c_void) !void
 {
@@ -89,7 +62,7 @@ fn handlerNoResponse(connection: *libhttp.mg_connection, data: ?*c_void) !void
     try expectEqual(data, null);
 }
 
-test "http localhost, no response"
+test "server+client, no response"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -100,7 +73,7 @@ test "http localhost, no response"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: cc.Response = undefined;
-    cc.get(false, TEST_PORT, "localhost", "/", &gpa.allocator, &responseData, &response) catch {
+    cc.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response) catch {
         try expect(!gpa.deinit());
         return;
     };
@@ -115,7 +88,7 @@ fn handlerOk(connection: *libhttp.mg_connection, data: ?*c_void) !void
     try libhttp.writeHttpEndHeader(connection);
 }
 
-test "http localhost, 200 OK"
+test "server+client, 200 OK"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -126,7 +99,7 @@ test "http localhost, 200 OK"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: cc.Response = undefined;
-    try cc.get(false, TEST_PORT, "localhost", "/", &gpa.allocator, &responseData, &response);
+    try cc.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
     try expectEqual(response.code, 200);
     try expectEqualSlices(u8, response.message, "OK");
     try expectEqual(response.body.len, 0);
@@ -139,7 +112,7 @@ fn handlerInternalError(connection: *libhttp.mg_connection, data: ?*c_void) !voi
     try libhttp.writeHttpEndHeader(connection);
 }
 
-test "http localhost, 500"
+test "server+client, 500"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -150,7 +123,7 @@ test "http localhost, 500"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: cc.Response = undefined;
-    try cc.get(false, TEST_PORT, "localhost", "/", &gpa.allocator, &responseData, &response);
+    try cc.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
     try expectEqual(response.code, 500);
     try expectEqualSlices(u8, response.message, "Internal Server Error");
     try expectEqual(response.body.len, 0);
@@ -165,7 +138,7 @@ fn handlerHelloWorld(connection: *libhttp.mg_connection, data: ?*c_void) !void
     try expectEqual(libhttp.mg_write(connection, &str[0], str.len), str.len);
 }
 
-test "http localhost, 200, return data"
+test "server+client, 200, return data"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -176,7 +149,7 @@ test "http localhost, 200, return data"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: cc.Response = undefined;
-    try cc.get(false, TEST_PORT, "localhost", "/", &gpa.allocator, &responseData, &response);
+    try cc.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
     try expectEqual(response.code, 200);
     try expectEqualSlices(u8, response.message, "OK");
     try expectEqualSlices(u8, response.body, "Hello, world!");
