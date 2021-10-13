@@ -7,7 +7,6 @@ const expectEqualSlices = std.testing.expectEqualSlices;
 
 const libhttp = @import("libhttp.zig");
 
-const c = @cImport(@cInclude("unistd.h"));
 const cc = @import("client.zig");
 
 const TEST_PORT = 19191;
@@ -56,20 +55,32 @@ test "server, SSL, no cert, FAIL"
 
 // server+client tests
 
+fn checkHeaders(actual: []const cc.Header, expected: []const cc.Header) !void
+{
+    if (actual.len != expected.len) {
+        std.log.err("header len actual {}, expected {}", .{actual.len, expected.len});
+        return error.lenMismatch;
+    }
+
+    for (actual) |_, i| {
+        try expectEqualSlices(u8, actual[i].name, expected[i].name);
+        try expectEqualSlices(u8, actual[i].value, expected[i].value);
+    }
+}
+
 fn handlerNoResponse(connection: *libhttp.mg_connection, data: ?*c_void) !void
 {
     _ = connection;
     try expectEqual(data, null);
 }
 
-test "server+client, no response"
+test "server+client, get /, no response"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
     const context = try libhttp.start(TEST_PORT, false, "", &gpa.allocator);
     defer libhttp.stop(context);
     libhttp.setRequestHandler(context, "/", handlerNoResponse, null);
-    _ = c.sleep(1);
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: cc.Response = undefined;
@@ -88,14 +99,13 @@ fn handlerOk(connection: *libhttp.mg_connection, data: ?*c_void) !void
     try libhttp.writeHttpEndHeader(connection);
 }
 
-test "server+client, 200 OK"
+test "server+client, get /, 200"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
     const context = try libhttp.start(TEST_PORT, false, "", &gpa.allocator);
     defer libhttp.stop(context);
     libhttp.setRequestHandler(context, "/", handlerOk, null);
-    _ = c.sleep(1);
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: cc.Response = undefined;
@@ -112,14 +122,13 @@ fn handlerInternalError(connection: *libhttp.mg_connection, data: ?*c_void) !voi
     try libhttp.writeHttpEndHeader(connection);
 }
 
-test "server+client, 500"
+test "server+client, get /, 500"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
     const context = try libhttp.start(TEST_PORT, false, "", &gpa.allocator);
     defer libhttp.stop(context);
     libhttp.setRequestHandler(context, "/", handlerInternalError, null);
-    _ = c.sleep(1);
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: cc.Response = undefined;
@@ -133,24 +142,54 @@ fn handlerHelloWorld(connection: *libhttp.mg_connection, data: ?*c_void) !void
 {
     try expectEqual(data, null);
     try libhttp.writeHttpCode(connection, ._200);
+    try libhttp.writeHttpContentType(connection, .TextPlain);
     try libhttp.writeHttpEndHeader(connection);
     const str = "Hello, world!";
     try expectEqual(libhttp.mg_write(connection, &str[0], str.len), str.len);
 }
 
-test "server+client, 200, return data"
+test "server+client, get /, 200, return data"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
     const context = try libhttp.start(TEST_PORT, false, "", &gpa.allocator);
     defer libhttp.stop(context);
     libhttp.setRequestHandler(context, "/", handlerHelloWorld, null);
-    _ = c.sleep(1);
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: cc.Response = undefined;
     try cc.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
     try expectEqual(response.code, 200);
     try expectEqualSlices(u8, response.message, "OK");
+    const expectedHeaders = [_]cc.Header {
+        .{
+            .name = "Content-Type",
+            .value = "text/plain",
+        },
+    };
+    try checkHeaders(response.headers[0..response.numHeaders], &expectedHeaders);
+    try expectEqualSlices(u8, response.body, "Hello, world!");
+}
+
+test "server+client, get /custom_uri, 200, return data"
+{
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
+    const context = try libhttp.start(TEST_PORT, false, "", &gpa.allocator);
+    defer libhttp.stop(context);
+    libhttp.setRequestHandler(context, "/custom_uri", handlerHelloWorld, null);
+
+    var responseData: std.ArrayList(u8) = undefined;
+    var response: cc.Response = undefined;
+    try cc.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", &gpa.allocator, &responseData, &response);
+    try expectEqual(response.code, 200);
+    try expectEqualSlices(u8, response.message, "OK");
+    const expectedHeaders = [_]cc.Header {
+        .{
+            .name = "Content-Type",
+            .value = "text/plain",
+        },
+    };
+    try checkHeaders(response.headers[0..response.numHeaders], &expectedHeaders);
     try expectEqualSlices(u8, response.body, "Hello, world!");
 }
