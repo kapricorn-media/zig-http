@@ -256,7 +256,7 @@ pub fn request(
     const headerStart = try std.fmt.bufPrint(
         &buf,
         "{s} {s} HTTP/1.1\r\nHost: {s}:{s}\r\nConnection: close\r\n",
-        .{getMethodString(method), uri, portString, hostname}
+        .{getMethodString(method), uri, hostname, portString}
     );
 
     const writeHeaderStartBytes = conn.write(headerStart);
