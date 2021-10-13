@@ -21,11 +21,25 @@ pub fn build(b: *std.build.Builder) void
     // lib.linkLibC();
     // lib.install();
 
+    const pkgSsl = std.build.Pkg {
+        .name = "ssl",
+        .path = std.build.FileSource.relative("deps/ziget/openssl/ssl.zig"),
+        .dependencies = null,
+    };
+    const pkgZiget = std.build.Pkg {
+        .name = "ziget",
+        .path = std.build.FileSource.relative("deps/ziget/ziget.zig"),
+        .dependencies = &[_]std.build.Pkg {
+            pkgSsl
+        },
+    };
+
     const tests = b.addTest("src/test.zig");
     tests.setTarget(target);
     tests.setBuildMode(mode);
     addLib(tests, ".");
     zig_openssl_build.addLib(tests, target, "deps/zig-openssl") catch unreachable;
+    tests.addPackage(pkgZiget);
     tests.linkLibC();
 
     const runTests = b.step("test", "Run library tests");
