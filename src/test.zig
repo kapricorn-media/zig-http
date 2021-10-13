@@ -238,3 +238,36 @@ test "server+client, get /custom_uri, serve /"
     try expectHeaders(&expectedHeaders, response.headers[0..response.numHeaders]);
     try expectEqualSlices(u8, "Hello, world!", response.body);
 }
+
+test "server+client, get /custom_uri, serve / and /custom_uri"
+{
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
+    const context = try libhttp.start(TEST_PORT, false, "", &gpa.allocator);
+    defer libhttp.stop(context);
+    libhttp.setRequestHandler(context, "/", handlerHelloWorld, null);
+    libhttp.setRequestHandler(context, "/custom_uri", handlerNoResponse, null);
+
+    var responseData: std.ArrayList(u8) = undefined;
+    var response: cc.Response = undefined;
+
+    try cc.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    try expectEqual(@as(u32, 200), response.code);
+    try expectEqualSlices(u8, "OK", response.message);
+    const expectedHeaders = [_]cc.Header {
+        .{
+            .name = "Content-Type",
+            .value = "text/plain",
+        },
+    };
+    try expectHeaders(&expectedHeaders, response.headers[0..response.numHeaders]);
+    try expectEqualSlices(u8, "Hello, world!", response.body);
+
+    try cc.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri2", &gpa.allocator, &responseData, &response);
+    try expectEqual(@as(u32, 200), response.code);
+    try expectEqualSlices(u8, "OK", response.message);
+    try expectHeaders(&expectedHeaders, response.headers[0..response.numHeaders]);
+    try expectEqualSlices(u8, "Hello, world!", response.body);
+
+    try expectAnyError(cc.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", &gpa.allocator, &responseData, &response));
+}
