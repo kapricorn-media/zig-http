@@ -86,6 +86,7 @@ fn handlerNoResponse(connection: *server.mg_connection, data: ?*c_void) !void
 test "server+client, get /, no response"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
 
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
@@ -131,6 +132,7 @@ fn handlerInternalError(connection: *server.mg_connection, data: ?*c_void) !void
 test "server+client, get /, 500"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
 
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
@@ -139,6 +141,7 @@ test "server+client, get /, 500"
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
     try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    defer responseData.deinit();
     try expectEqual(@as(u32, 500), response.code);
     try expectEqualSlices(u8, "Internal Server Error", response.message);
     try expectEqual(@as(usize, 0), response.body.len);
@@ -157,6 +160,7 @@ fn handlerHelloWorld(connection: *server.mg_connection, data: ?*c_void) !void
 test "server+client, get /, 200, return data"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
 
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
@@ -165,6 +169,7 @@ test "server+client, get /, 200, return data"
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
     try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    defer responseData.deinit();
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
     const expectedHeaders = [_]client.Header {
@@ -180,6 +185,7 @@ test "server+client, get /, 200, return data"
 test "server+client, get /custom_uri, 200, return data"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
 
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
@@ -188,6 +194,7 @@ test "server+client, get /custom_uri, 200, return data"
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
     try client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", &gpa.allocator, &responseData, &response);
+    defer responseData.deinit();
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
     const expectedHeaders = [_]client.Header {
@@ -203,6 +210,7 @@ test "server+client, get /custom_uri, 200, return data"
 test "server+client, get /, serve /custom_uri"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
 
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
@@ -211,6 +219,7 @@ test "server+client, get /, serve /custom_uri"
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
     try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    defer responseData.deinit();
     try expectEqual(@as(u32, 404), response.code);
     try expectEqualSlices(u8, "Not Found", response.message);
 }
@@ -218,6 +227,7 @@ test "server+client, get /, serve /custom_uri"
 test "server+client, get /custom_uri, serve /"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
 
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
@@ -226,6 +236,7 @@ test "server+client, get /custom_uri, serve /"
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
     try client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", &gpa.allocator, &responseData, &response);
+    defer responseData.deinit();
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
     const expectedHeaders = [_]client.Header {
@@ -241,6 +252,7 @@ test "server+client, get /custom_uri, serve /"
 test "server+client, get /custom_uri, serve / and /custom_uri"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
 
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
@@ -249,7 +261,6 @@ test "server+client, get /custom_uri, serve / and /custom_uri"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-
     try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
@@ -261,12 +272,14 @@ test "server+client, get /custom_uri, serve / and /custom_uri"
     };
     try expectHeaders(&expectedHeaders, response.headers[0..response.numHeaders]);
     try expectEqualSlices(u8, "Hello, world!", response.body);
+    responseData.deinit();
 
     try client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri2", &gpa.allocator, &responseData, &response);
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
     try expectHeaders(&expectedHeaders, response.headers[0..response.numHeaders]);
     try expectEqualSlices(u8, "Hello, world!", response.body);
+    responseData.deinit();
 
     try expectAnyError(client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", &gpa.allocator, &responseData, &response));
 }
