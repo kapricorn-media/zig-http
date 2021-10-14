@@ -15,7 +15,7 @@ pub fn build(b: *std.build.Builder) void
     };
     const mode = b.standardReleaseOptions();
 
-    const tests = b.addTest("src/test.zig");
+    const tests = b.addTest("test/test.zig");
     tests.setTarget(target);
     tests.setBuildMode(mode);
     addLib(tests, ".");
@@ -28,8 +28,8 @@ pub fn build(b: *std.build.Builder) void
 
 pub fn addLib(step: *std.build.LibExeObjStep, comptime dir: []const u8) void
 {
-    step.addPackagePath("http-client", "src/client.zig");
-    step.addPackagePath("http-server", "src/server.zig");
+    step.addPackagePath("http-client", dir ++ "/src/client.zig");
+    step.addPackagePath("http-server", dir ++ "/src/server.zig");
     const cFlags = &[_][]const u8 {
     };
     step.addIncludeDir(dir ++ "/src");
