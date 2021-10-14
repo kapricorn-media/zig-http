@@ -1,12 +1,10 @@
 const std = @import("std");
-const ssl = @import("ssl");
-const ziget = @import("ziget");
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualSlices = std.testing.expectEqualSlices;
 
-const client = @import("client.zig");
-const server = @import("server.zig");
+const client = @import("http-client");
+const server = @import("http-server");
 
 const TEST_PORT = 19191;
 const TEST_HOSTNAME = "127.0.0.1";
