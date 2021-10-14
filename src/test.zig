@@ -33,10 +33,10 @@ fn expectAnyError(result: anytype) !void
 test "server, no SSL"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
+
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
-    
-    try expect(!gpa.deinit()); // TODO ideally this should be defer'd at the start
 }
 
 fn handlerNullData(connection: *server.mg_connection, data: ?*c_void) !void
@@ -48,20 +48,20 @@ fn handlerNullData(connection: *server.mg_connection, data: ?*c_void) !void
 test "server, no SSL, request handler"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
+
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
 
     server.setRequestHandler(context, "/", handlerNullData, null);
-    
-    try expect(!gpa.deinit());
 }
 
 test "server, SSL, no cert, FAIL"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
 
-    const context = server.start(TEST_PORT, true, "", &gpa.allocator);
-    try expectAnyError(context);
+    try expectAnyError(server.start(TEST_PORT, true, "", &gpa.allocator));
 }
 
 // server+client tests
@@ -108,6 +108,7 @@ fn handlerOk(connection: *server.mg_connection, data: ?*c_void) !void
 test "server+client, get /, 200"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
 
     const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
     defer server.stop(context);
@@ -116,6 +117,7 @@ test "server+client, get /, 200"
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
     try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    // defer responseData.deinit();
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
     try expectEqual(@as(usize, 0), response.body.len);
