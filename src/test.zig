@@ -115,7 +115,7 @@ test "server+client, get /, 200"
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
     try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
-    // defer responseData.deinit();
+    defer responseData.deinit();
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
     try expectEqual(@as(usize, 0), response.body.len);
