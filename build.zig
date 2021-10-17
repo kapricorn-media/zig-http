@@ -18,7 +18,7 @@ pub fn build(b: *std.build.Builder) void
     const tests = b.addTest("test/test.zig");
     tests.setTarget(target);
     tests.setBuildMode(mode);
-    addLib(tests, ".");
+    addLib(tests, target, ".");
     zig_openssl_build.addLib(tests, target, "deps/zig-openssl") catch unreachable;
     tests.linkLibC();
 
