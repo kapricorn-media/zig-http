@@ -26,7 +26,7 @@ pub fn build(b: *std.build.Builder) void
     runTests.dependOn(&tests.step);
 }
 
-pub fn addLib(step: *std.build.LibExeObjStep, comptime dir: []const u8) void
+pub fn addLib(step: *std.build.LibExeObjStep, target: std.zig.CrossTarget, comptime dir: []const u8) void
 {
     step.addPackagePath("http-client", dir ++ "/src/client.zig");
     step.addPackagePath("http-server", dir ++ "/src/server.zig");
@@ -36,4 +36,6 @@ pub fn addLib(step: *std.build.LibExeObjStep, comptime dir: []const u8) void
     step.addCSourceFiles(&[_][]const u8 {
         dir ++ "/src/civetweb.c",
     }, cFlags);
+
+    zig_openssl_build.addLib(step, target, dir ++ "/deps/zig-openssl") catch unreachable;
 }
