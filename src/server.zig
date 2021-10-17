@@ -84,7 +84,7 @@ fn getHandlerWrapper(comptime handler: HandlerFunc) HandlerFuncRaw
     return S.handlerWrapper;
 }
 
-pub fn start(port: u16, comptime ssl: bool, sslCertPath: [:0]const u8, allocator: *std.mem.Allocator) !*cw.mg_context
+pub fn start(port: u16, ssl: bool, sslCertPath: [:0]const u8, allocator: *std.mem.Allocator) !*cw.mg_context
 {
     var callbacks: cw.mg_callbacks = undefined;
     callbacks.begin_request = null;
@@ -99,9 +99,11 @@ pub fn start(port: u16, comptime ssl: bool, sslCertPath: [:0]const u8, allocator
     callbacks.init_thread = null;
     callbacks.exit_context = null;
 
-    const portFmt = if (ssl) "{}s" else "{}";
-    const portStr = try std.fmt.allocPrintZ(allocator, portFmt, .{port});
+    const portStr = try std.fmt.allocPrintZ(allocator, "{}s", .{port});
     defer allocator.free(portStr);
+    if (!ssl) {
+        portStr[portStr.len - 1] = 0;
+    }
 
     var options = std.ArrayList(?*const u8).init(allocator);
     defer options.deinit();
