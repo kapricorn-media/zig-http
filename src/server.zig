@@ -136,3 +136,8 @@ pub fn setRequestHandler(context: *cw.mg_context, comptime uri: [:0]const u8, co
     const handlerWrapper = getHandlerWrapper(handler);
     cw.mg_set_request_handler(context, uri, handlerWrapper, data);
 }
+
+// patching some SSL stuff from civetweb (old SSL function?)
+export fn ENGINE_cleanup() void
+{
+}

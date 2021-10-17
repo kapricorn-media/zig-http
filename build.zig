@@ -31,6 +31,11 @@ pub fn addLib(step: *std.build.LibExeObjStep, target: std.zig.CrossTarget, compt
     step.addPackagePath("http-client", dir ++ "/src/client.zig");
     step.addPackagePath("http-server", dir ++ "/src/server.zig");
     const cFlags = &[_][]const u8 {
+        "-Wall", "-Wextra", "-Werror",
+        "-Wno-deprecated-declarations",
+        "-Wno-implicit-function-declaration",
+        "-Wno-unused-function",
+        "-DNO_SSL_DL=1",
     };
     step.addIncludeDir(dir ++ "/src");
     step.addCSourceFiles(&[_][]const u8 {
