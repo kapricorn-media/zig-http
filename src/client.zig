@@ -216,6 +216,7 @@ pub fn request(
     port: i32,
     hostname: [:0]const u8,
     uri: []const u8,
+    headers: ?[]const Header,
     body: ?[]const u8,
     allocator: *std.mem.Allocator,
     outData: *std.ArrayList(u8),
@@ -265,6 +266,21 @@ pub fn request(
         return error.writeHeaderStart;
     }
 
+    if (headers) |hs| {
+        for (hs) |h| {
+            const line = try std.fmt.bufPrint(
+                &buf,
+                "\r\n{s}: {s}\r\n",
+                .{h.name, h.value}
+            );
+            const writeLineBytes = conn.write(line);
+            if (writeLineBytes != line.len) {
+                std.log.err("write for headers returned {}, expected {}", .{writeLineBytes, line.len}); 
+                return error.writeHeaderStart;
+            }
+        }
+    }
+
     // TODO write custom headers
 
     if (conn.write("\r\n") != 2) {
@@ -301,31 +317,34 @@ pub fn get(
     port: i32,
     hostname: [:0]const u8,
     uri: []const u8,
+    headers: ?[]const Header,
     allocator: *std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    return request(.Get, useSsl, port, hostname, uri, null, allocator, outData, outResponse);
+    return request(.Get, useSsl, port, hostname, uri, headers, null, allocator, outData, outResponse);
 }
 
 pub fn httpGet(
     hostname: [:0]const u8,
     uri: []const u8,
+    headers: ?[]const Header,
     allocator: *std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    return get(false, 80, hostname, uri, allocator, outData, outResponse);
+    return get(false, 80, hostname, uri, headers, allocator, outData, outResponse);
 }
 
 pub fn httpsGet(
     hostname: [:0]const u8,
     uri: []const u8,
+    headers: ?[]const Header,
     allocator: *std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    return get(true, 443, hostname, uri, allocator, outData, outResponse);
+    return get(true, 443, hostname, uri, headers, allocator, outData, outResponse);
 }
 
 pub fn post(
@@ -333,32 +352,35 @@ pub fn post(
     port: i32,
     hostname: [:0]const u8,
     uri: []const u8,
+    headers: ?[]const Header,
     body: ?[]const u8,
     allocator: *std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    return request(.Post, useSsl, port, hostname, uri, body, allocator, outData, outResponse);
+    return request(.Post, useSsl, port, hostname, uri, headers, body, allocator, outData, outResponse);
 }
 
 pub fn httpPost(
     hostname: [:0]const u8,
     uri: []const u8,
+    headers: ?[]const Header,
     body: ?[]const u8,
     allocator: *std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    return post(false, 80, hostname, uri, body, allocator, outData, outResponse);
+    return post(false, 80, hostname, uri, headers, body, allocator, outData, outResponse);
 }
 
 pub fn httpsPost(
     hostname: [:0]const u8,
     uri: []const u8,
+    headers: ?[]const Header,
     body: ?[]const u8,
     allocator: *std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    return post(true, 443, hostname, uri, body, allocator, outData, outResponse);
+    return post(true, 443, hostname, uri, headers, body, allocator, outData, outResponse);
 }

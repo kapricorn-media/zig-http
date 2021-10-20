@@ -7,6 +7,7 @@ const client = @import("http-client");
 const server = @import("http-server");
 
 const TEST_PORT = 19191;
+const TEST_PORT_STR = std.fmt.comptimePrint("{}", .{TEST_PORT});
 const TEST_HOSTNAME = "127.0.0.1";
 
 fn expectAnyError(result: anytype) !void
@@ -24,6 +25,21 @@ fn expectAnyError(result: anytype) !void
             },
         }
     }
+}
+
+fn checkRequestHeaders(connection: *server.mg_connection) !void
+{
+    const requestInfo = server.mg_get_request_info(connection);
+    try expectEqualSlices(u8, "GET", std.mem.span(requestInfo.*.request_method));
+    // try expectEqualSlices(u8, "/", std.mem.span(requestInfo.*.request_uri));
+    try expectEqualSlices(u8, "1.1", std.mem.span(requestInfo.*.http_version));
+    try expectEqual(@as(?*const u8, null), requestInfo.*.query_string);
+    const numHeaders = 2;
+    try expectEqual(@as(c_int, numHeaders), requestInfo.*.num_headers);
+    try expectEqualSlices(u8, "Host", std.mem.span(requestInfo.*.http_headers[0].name));
+    try expectEqualSlices(u8, TEST_HOSTNAME ++ ":" ++ TEST_PORT_STR, std.mem.span(requestInfo.*.http_headers[0].value));
+    try expectEqualSlices(u8, "Connection", std.mem.span(requestInfo.*.http_headers[1].name));
+    try expectEqualSlices(u8, "close", std.mem.span(requestInfo.*.http_headers[1].value));
 }
 
 // server tests
@@ -80,7 +96,10 @@ fn expectHeaders(expected: []const client.Header, actual: []const client.Header)
 fn handlerNoResponse(connection: *server.mg_connection, data: ?*c_void) !void
 {
     _ = connection;
+
     try expectEqual(@as(?*c_void, null), data);
+
+    try checkRequestHeaders(connection);
 }
 
 test "server+client, get /, no response"
@@ -94,12 +113,15 @@ test "server+client, get /, no response"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try expectAnyError(client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response));
+    try expectAnyError(client.get(false, TEST_PORT, TEST_HOSTNAME, "/", null, &gpa.allocator, &responseData, &response));
 }
 
 fn handlerOk(connection: *server.mg_connection, data: ?*c_void) !void
 {
     try expectEqual(@as(?*c_void, null), data);
+
+    try checkRequestHeaders(connection);
+
     try server.writeHttpCode(connection, ._200);
     try server.writeHttpEndHeader(connection);
 }
@@ -115,7 +137,7 @@ test "server+client, get /, 200"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", null, &gpa.allocator, &responseData, &response);
     defer responseData.deinit();
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
@@ -125,6 +147,9 @@ test "server+client, get /, 200"
 fn handlerInternalError(connection: *server.mg_connection, data: ?*c_void) !void
 {
     try expectEqual(@as(?*c_void, null), data);
+
+    try checkRequestHeaders(connection);
+
     try server.writeHttpCode(connection, ._500);
     try server.writeHttpEndHeader(connection);
 }
@@ -140,7 +165,7 @@ test "server+client, get /, 500"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", null, &gpa.allocator, &responseData, &response);
     defer responseData.deinit();
     try expectEqual(@as(u32, 500), response.code);
     try expectEqualSlices(u8, "Internal Server Error", response.message);
@@ -150,6 +175,9 @@ test "server+client, get /, 500"
 fn handlerHelloWorld(connection: *server.mg_connection, data: ?*c_void) !void
 {
     try expectEqual(@as(?*c_void, null), data);
+
+    try checkRequestHeaders(connection);
+
     try server.writeHttpCode(connection, ._200);
     try server.writeHttpContentType(connection, .TextPlain);
     try server.writeHttpEndHeader(connection);
@@ -168,7 +196,7 @@ test "server+client, get /, 200, return data"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", null, &gpa.allocator, &responseData, &response);
     defer responseData.deinit();
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
@@ -193,7 +221,7 @@ test "server+client, get /custom_uri, 200, return data"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", &gpa.allocator, &responseData, &response);
+    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", null, &gpa.allocator, &responseData, &response);
     defer responseData.deinit();
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
@@ -218,7 +246,7 @@ test "server+client, get /, serve /custom_uri"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", null, &gpa.allocator, &responseData, &response);
     defer responseData.deinit();
     try expectEqual(@as(u32, 404), response.code);
     try expectEqualSlices(u8, "Not Found", response.message);
@@ -235,7 +263,7 @@ test "server+client, get /custom_uri, serve /"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", &gpa.allocator, &responseData, &response);
+    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", null, &gpa.allocator, &responseData, &response);
     defer responseData.deinit();
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
@@ -261,7 +289,7 @@ test "server+client, get /custom_uri, serve / and /custom_uri"
 
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &gpa.allocator, &responseData, &response);
+    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", null, &gpa.allocator, &responseData, &response);
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
     const expectedHeaders = [_]client.Header {
@@ -274,12 +302,60 @@ test "server+client, get /custom_uri, serve / and /custom_uri"
     try expectEqualSlices(u8, "Hello, world!", response.body);
     responseData.deinit();
 
-    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri2", &gpa.allocator, &responseData, &response);
+    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri2", null, &gpa.allocator, &responseData, &response);
     try expectEqual(@as(u32, 200), response.code);
     try expectEqualSlices(u8, "OK", response.message);
     try expectHeaders(&expectedHeaders, response.headers[0..response.numHeaders]);
     try expectEqualSlices(u8, "Hello, world!", response.body);
     responseData.deinit();
 
-    try expectAnyError(client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", &gpa.allocator, &responseData, &response));
+    try expectAnyError(client.get(false, TEST_PORT, TEST_HOSTNAME, "/custom_uri", null, &gpa.allocator, &responseData, &response));
+}
+
+fn handlerHeaders(connection: *server.mg_connection, data: ?*c_void) !void
+{
+    try expectEqual(@as(?*c_void, null), data);
+
+    try checkRequestHeaders(connection);
+
+    try server.writeHttpCode(connection, ._200);
+    try server.writeHttpContentType(connection, .TextPlain);
+    try server.writeHttpEndHeader(connection);
+    const str = "Hello, world!";
+    try expectEqual(@as(c_int, str.len), server.mg_write(connection, &str[0], str.len));
+}
+
+test "server+client, get /, 200, send headers"
+{
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
+
+    const context = try server.start(TEST_PORT, false, "", &gpa.allocator);
+    defer server.stop(context);
+    server.setRequestHandler(context, "/", handlerHeaders, null);
+
+    var responseData: std.ArrayList(u8) = undefined;
+    var response: client.Response = undefined;
+    const headers = [_]client.Header {
+        .{
+            .name = "Time",
+            .value = "420",
+        },
+        .{
+            .name = "CustomHeader",
+            .value = "CustomValue",
+        },
+    };
+    try client.get(false, TEST_PORT, TEST_HOSTNAME, "/", &headers, &gpa.allocator, &responseData, &response);
+    defer responseData.deinit();
+    try expectEqual(@as(u32, 200), response.code);
+    try expectEqualSlices(u8, "OK", response.message);
+    const expectedHeaders = [_]client.Header {
+        .{
+            .name = "Content-Type",
+            .value = "text/plain",
+        },
+    };
+    try expectHeaders(&expectedHeaders, response.headers[0..response.numHeaders]);
+    try expectEqualSlices(u8, "Hello, world!", response.body);
 }
