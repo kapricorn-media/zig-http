@@ -254,10 +254,11 @@ pub fn request(
     const conn = try HttpConnection.init(useSsl, socket);
 
     var buf: [4096]u8 = undefined;
+    const contentLength = if (body) |b| b.len else 0;
     const headerStart = try std.fmt.bufPrint(
         &buf,
-        "{s} {s} HTTP/1.1\r\nHost: {s}:{s}\r\nConnection: close\r\n",
-        .{getMethodString(method), uri, hostname, portString}
+        "{s} {s} HTTP/1.1\r\nHost: {s}:{s}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        .{getMethodString(method), uri, hostname, portString, contentLength}
     );
 
     const writeHeaderStartBytes = conn.write(headerStart);
@@ -270,7 +271,7 @@ pub fn request(
         for (hs) |h| {
             const line = try std.fmt.bufPrint(
                 &buf,
-                "\r\n{s}: {s}\r\n",
+                "{s}: {s}\r\n",
                 .{h.name, h.value}
             );
             const writeLineBytes = conn.write(line);

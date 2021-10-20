@@ -27,19 +27,23 @@ fn expectAnyError(result: anytype) !void
     }
 }
 
-fn checkRequestHeaders(connection: *server.mg_connection) !void
+fn checkRequestHeaders(connection: *server.mg_connection, numHeaders: c_int) !void
 {
     const requestInfo = server.mg_get_request_info(connection);
     try expectEqualSlices(u8, "GET", std.mem.span(requestInfo.*.request_method));
     // try expectEqualSlices(u8, "/", std.mem.span(requestInfo.*.request_uri));
     try expectEqualSlices(u8, "1.1", std.mem.span(requestInfo.*.http_version));
     try expectEqual(@as(?*const u8, null), requestInfo.*.query_string);
-    const numHeaders = 2;
-    try expectEqual(@as(c_int, numHeaders), requestInfo.*.num_headers);
+    try expect(numHeaders >= 3);
+    try expectEqual(numHeaders, requestInfo.*.num_headers);
     try expectEqualSlices(u8, "Host", std.mem.span(requestInfo.*.http_headers[0].name));
     try expectEqualSlices(u8, TEST_HOSTNAME ++ ":" ++ TEST_PORT_STR, std.mem.span(requestInfo.*.http_headers[0].value));
     try expectEqualSlices(u8, "Connection", std.mem.span(requestInfo.*.http_headers[1].name));
     try expectEqualSlices(u8, "close", std.mem.span(requestInfo.*.http_headers[1].value));
+    try expectEqualSlices(u8, "Content-Length", std.mem.span(requestInfo.*.http_headers[2].name));
+    try expectEqualSlices(u8, "0", std.mem.span(requestInfo.*.http_headers[2].value));
+
+    try expectEqual(@as(c_longlong, 0), requestInfo.*.content_length);
 }
 
 // server tests
@@ -99,7 +103,7 @@ fn handlerNoResponse(connection: *server.mg_connection, data: ?*c_void) !void
 
     try expectEqual(@as(?*c_void, null), data);
 
-    try checkRequestHeaders(connection);
+    try checkRequestHeaders(connection, 3);
 }
 
 test "server+client, get /, no response"
@@ -120,7 +124,7 @@ fn handlerOk(connection: *server.mg_connection, data: ?*c_void) !void
 {
     try expectEqual(@as(?*c_void, null), data);
 
-    try checkRequestHeaders(connection);
+    try checkRequestHeaders(connection, 3);
 
     try server.writeHttpCode(connection, ._200);
     try server.writeHttpEndHeader(connection);
@@ -148,7 +152,7 @@ fn handlerInternalError(connection: *server.mg_connection, data: ?*c_void) !void
 {
     try expectEqual(@as(?*c_void, null), data);
 
-    try checkRequestHeaders(connection);
+    try checkRequestHeaders(connection, 3);
 
     try server.writeHttpCode(connection, ._500);
     try server.writeHttpEndHeader(connection);
@@ -176,7 +180,7 @@ fn handlerHelloWorld(connection: *server.mg_connection, data: ?*c_void) !void
 {
     try expectEqual(@as(?*c_void, null), data);
 
-    try checkRequestHeaders(connection);
+    try checkRequestHeaders(connection, 3);
 
     try server.writeHttpCode(connection, ._200);
     try server.writeHttpContentType(connection, .TextPlain);
@@ -316,7 +320,12 @@ fn handlerHeaders(connection: *server.mg_connection, data: ?*c_void) !void
 {
     try expectEqual(@as(?*c_void, null), data);
 
-    try checkRequestHeaders(connection);
+    try checkRequestHeaders(connection, 5);
+    const requestInfo = server.mg_get_request_info(connection);
+    try expectEqualSlices(u8, "Time", std.mem.span(requestInfo.*.http_headers[3].name));
+    try expectEqualSlices(u8, "420", std.mem.span(requestInfo.*.http_headers[3].value));
+    try expectEqualSlices(u8, "CustomHeader", std.mem.span(requestInfo.*.http_headers[4].name));
+    try expectEqualSlices(u8, "CustomValue", std.mem.span(requestInfo.*.http_headers[4].value));
 
     try server.writeHttpCode(connection, ._200);
     try server.writeHttpContentType(connection, .TextPlain);
