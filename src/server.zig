@@ -13,6 +13,7 @@ pub const HttpContentType = enum
 {
     TextPlain,
     TextHtml,
+    ApplicationJson,
     ApplicationOctetStream,
 };
 
@@ -43,6 +44,7 @@ pub fn writeHttpContentType(connection: *cw.mg_connection, contentType: HttpCont
     const string = switch (contentType) {
         .TextPlain              => "text/plain",
         .TextHtml               => "text/html",
+        .ApplicationJson        => "application/json",
         .ApplicationOctetStream => "application/octet-stream",
     };
     const line = try std.fmt.bufPrint(&buf, "Content-Type: {s}\r\n", .{string});
