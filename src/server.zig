@@ -6,6 +6,7 @@ pub usingnamespace cw;
 pub const HttpCode = enum(u32)
 {
     _200 = 200,
+    _301 = 301,
     _500 = 500,
 };
 
@@ -24,6 +25,7 @@ pub fn writeHttpCode(connection: *cw.mg_connection, code: HttpCode) !void
 
     const string = switch (code) {
         ._200 => "OK",
+        ._301 => "Moved Permanently",
         ._500 => "Internal Server Error"
     };
     const response = try std.fmt.bufPrint(&buf, "HTTP/1.1 {} {s}\r\n", .{
@@ -36,22 +38,26 @@ pub fn writeHttpCode(connection: *cw.mg_connection, code: HttpCode) !void
     }
 }
 
-pub fn writeHttpContentType(connection: *cw.mg_connection, contentType: HttpContentType) !void
+pub fn writeHttpHeader(connection: *cw.mg_connection, name: []const u8, value: []const u8) !void
 {
     const bufSize = 1024;
     var buf: [bufSize]u8 = undefined;
+    const line = try std.fmt.bufPrint(&buf, "{s}: {s}\r\n", .{name, value});
+    const bytes = cw.mg_write(connection, &line[0], line.len);
+    if (bytes != line.len) {
+        return error.mg_write;
+    }
+}
 
+pub fn writeHttpContentType(connection: *cw.mg_connection, contentType: HttpContentType) !void
+{
     const string = switch (contentType) {
         .TextPlain              => "text/plain",
         .TextHtml               => "text/html",
         .ApplicationJson        => "application/json",
         .ApplicationOctetStream => "application/octet-stream",
     };
-    const line = try std.fmt.bufPrint(&buf, "Content-Type: {s}\r\n", .{string});
-    const bytes = cw.mg_write(connection, &line[0], line.len);
-    if (bytes != line.len) {
-        return error.mg_write;
-    }
+    try writeHttpHeader(connection, "Content-Type", string);
 }
 
 pub fn writeHttpEndHeader(connection: *cw.mg_connection) !void
