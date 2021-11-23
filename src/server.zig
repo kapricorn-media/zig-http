@@ -7,6 +7,9 @@ pub const HttpCode = enum(u32)
 {
     _200 = 200,
     _301 = 301,
+    _400 = 400,
+    _401 = 401,
+    _404 = 404,
     _500 = 500,
 };
 
@@ -26,6 +29,9 @@ pub fn writeHttpCode(connection: *cw.mg_connection, code: HttpCode) !void
     const string = switch (code) {
         ._200 => "OK",
         ._301 => "Moved Permanently",
+        ._400 => "Bad Request",
+        ._401 => "Unauthorized",
+        ._404 => "Not Found",
         ._500 => "Internal Server Error"
     };
     const response = try std.fmt.bufPrint(&buf, "HTTP/1.1 {} {s}\r\n", .{
