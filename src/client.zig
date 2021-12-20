@@ -1,23 +1,5 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("stdio.h");
-    @cInclude("memory.h");
-    @cInclude("errno.h");
-    @cInclude("sys/types.h");
-    @cInclude("sys/socket.h");
-    @cInclude("netinet/in.h");
-    @cInclude("arpa/inet.h");
-    @cInclude("netdb.h");
-    @cInclude("openssl/crypto.h");
-    @cInclude("openssl/x509.h");
-    @cInclude("openssl/pem.h");
-    @cInclude("openssl/ssl.h");
-    @cInclude("openssl/ssl2.h");
-    @cInclude("openssl/err.h");
-    @cInclude("unistd.h");
-});
-
 pub const HttpVersion = enum
 {
     Http1_0,
@@ -125,172 +107,42 @@ fn getMethodString(method: Method) []const u8
     }
 }
 
-fn sslRead(ssl: *c.SSL, outData: []u8) c_int
-{
-    return c.SSL_read(ssl, &outData[0], @intCast(c_int, outData.len));
-}
-
-fn sslWrite(ssl: *c.SSL, data: []const u8) c_int
-{
-    return c.SSL_write(ssl, &data[0], @intCast(c_int, data.len));
-}
-
-const HttpConnection = struct
-{
-    useSsl: bool,
-    socket: c_int,
-    sslContext: *c.SSL_CTX,
-    ssl: *c.SSL,
-
-    const Self = @This();
-
-    fn init(comptime useSsl: bool, socket: c_int) !Self
-    {
-        var self: Self = .{
-            .useSsl = useSsl,
-            .socket = socket,
-            .sslContext = undefined,
-            .ssl = undefined,
-        };
-
-        if (useSsl) {
-            const result = c.OPENSSL_init_ssl(c.OPENSSL_INIT_LOAD_SSL_STRINGS | c.OPENSSL_INIT_LOAD_CRYPTO_STRINGS, null);
-            if (result != 1) {
-                return error.OPENSSL_init_ssl;
-            }
-
-            var clientMethod = c.TLS_client_method();
-            self.sslContext = c.SSL_CTX_new(clientMethod) orelse {
-                return error.SSL_CTX_new;
-            };
-
-            self.ssl = c.SSL_new(self.sslContext) orelse {
-                return error.SSL_new;
-            };
-            if (c.SSL_set_fd(self.ssl, socket) != 1) {
-                return error.SSL_set_fd;
-            }
-            const sslConnectResult = c.SSL_connect(self.ssl);
-            if (sslConnectResult != 1) {
-                return error.SSL_connect;
-            }
-        }
-
-        return self;
-    }
-
-    fn deinit(self: *Self) void
-    {
-        const sslShutdownResult = c.SSL_shutdown(self.ssl);
-        if (sslShutdownResult != 1) {
-            std.log.err("SSL_shutdown failed, {}", .{sslShutdownResult});
-        }
-        c.SSL_free(self.ssl);
-        c.SSL_CTX_free(self.sslContext);
-    }
-
-    fn read(self: *const Self, outData: []u8) i64
-    {
-        if (self.useSsl) {
-            return c.SSL_read(self.ssl, &outData[0], @intCast(c_int, outData.len));
-        }
-        else {
-            return c.read(self.socket, &outData[0], outData.len);
-        }
-    }
-
-    fn write(self: *const Self, data: []const u8) i64
-    {
-        if (self.useSsl) {
-            return c.SSL_write(self.ssl, &data[0], @intCast(c_int, data.len));
-        }
-        else {
-            return c.write(self.socket, &data[0], data.len);
-        }
-    }
-};
-
 pub fn request(
     method: Method,
     comptime useSsl: bool,
-    port: i32,
+    port: u16,
     hostname: [:0]const u8,
     uri: []const u8,
     headers: ?[]const Header,
     body: ?[]const u8,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    var hint = std.mem.zeroes(c.addrinfo);
-    hint.ai_family = c.AF_UNSPEC;
-    hint.ai_socktype = c.SOCK_STREAM;
-    hint.ai_protocol = 0;
-    var addrInfoC: [*c]c.addrinfo = undefined;
-    var portBuf: [8]u8 = undefined;
-    const portString = try std.fmt.bufPrintZ(&portBuf, "{}", .{port});
-    const addrInfoResult = c.getaddrinfo(hostname, portString, &hint, &addrInfoC);
-    if (addrInfoResult != 0) {
-        std.log.err("getaddrinfo failed, {}", .{addrInfoResult});
-        return error.getaddrinfo;
-    }
+    _ = useSsl;
 
-    const addrInfo = addrInfoC.*;
-    const socket = c.socket(addrInfo.ai_family, addrInfo.ai_socktype, addrInfo.ai_protocol);
-    if (socket == -1) {
-        return error.socket;
-    }
-    defer {
-        if (c.close(socket) == -1) {
-            std.log.err("close socket failed", .{});
-        }
-    }
+    var stream = try std.net.tcpConnectToHost(allocator, hostname, port);
+    var streamWriter = stream.writer();
 
-    const connectResult = c.connect(socket, addrInfo.ai_addr, addrInfo.ai_addrlen);
-    if (connectResult == -1) {
-        return error.connect;
-    }
-
-    const conn = try HttpConnection.init(useSsl, socket);
-
-    var buf: [4096]u8 = undefined;
     const contentLength = if (body) |b| b.len else 0;
-    const headerStart = try std.fmt.bufPrint(
-        &buf,
-        "{s} {s} HTTP/1.1\r\nHost: {s}:{s}\r\nConnection: close\r\nContent-Length: {}\r\n",
-        .{getMethodString(method), uri, hostname, portString, contentLength}
+    try std.fmt.format(
+        streamWriter,
+        "{s} {s} HTTP/1.1\r\nHost: {s}:{}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        .{getMethodString(method), uri, hostname, port, contentLength}
     );
-
-    const writeHeaderStartBytes = conn.write(headerStart);
-    if (writeHeaderStartBytes != headerStart.len) {
-        std.log.err("write for headers returned {}, expected {}", .{writeHeaderStartBytes, headerStart.len}); 
-        return error.writeHeaderStart;
-    }
 
     if (headers) |hs| {
         for (hs) |h| {
-            const line = try std.fmt.bufPrint(
-                &buf,
-                "{s}: {s}\r\n",
-                .{h.name, h.value}
-            );
-            const writeLineBytes = conn.write(line);
-            if (writeLineBytes != line.len) {
-                std.log.err("write for headers returned {}, expected {}", .{writeLineBytes, line.len}); 
-                return error.writeHeaderStart;
-            }
+            try std.fmt.format(streamWriter, "{s}: {s}\r\n", .{h.name, h.value});
         }
     }
 
-    // TODO write custom headers
-
-    if (conn.write("\r\n") != 2) {
+    if ((try stream.write("\r\n")) != 2) {
         return error.writeHeaderEnd;
     }
 
     if (body) |b| {
-        const writeBodyBytes = conn.write(b);
-        if (writeBodyBytes != b.len) {
+        if ((try stream.write(b)) != b.len) {
             return error.writeBody;
         }
     }
@@ -298,8 +150,9 @@ pub fn request(
     const initialCapacity = 4096;
     outData.* = try std.ArrayList(u8).initCapacity(allocator, initialCapacity);
     errdefer outData.deinit();
+    var buf: [4096]u8 = undefined;
     while (true) {
-        const readBytes = conn.read(&buf);
+        const readBytes = try stream.read(&buf);
         if (readBytes < 0) {
             return error.readResponse;
         }
@@ -315,11 +168,11 @@ pub fn request(
 
 pub fn get(
     comptime useSsl: bool,
-    port: i32,
+    port: u16,
     hostname: [:0]const u8,
     uri: []const u8,
     headers: ?[]const Header,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
@@ -330,7 +183,7 @@ pub fn httpGet(
     hostname: [:0]const u8,
     uri: []const u8,
     headers: ?[]const Header,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
@@ -341,7 +194,7 @@ pub fn httpsGet(
     hostname: [:0]const u8,
     uri: []const u8,
     headers: ?[]const Header,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
@@ -350,12 +203,12 @@ pub fn httpsGet(
 
 pub fn post(
     comptime useSsl: bool,
-    port: i32,
+    port: u16,
     hostname: [:0]const u8,
     uri: []const u8,
     headers: ?[]const Header,
     body: ?[]const u8,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
@@ -367,7 +220,7 @@ pub fn httpPost(
     uri: []const u8,
     headers: ?[]const Header,
     body: ?[]const u8,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
@@ -379,7 +232,7 @@ pub fn httpsPost(
     uri: []const u8,
     headers: ?[]const Header,
     body: ?[]const u8,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
