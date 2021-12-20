@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const bssl = @cImport(@cInclude("bearssl.h"));
+
 pub const HttpVersion = enum
 {
     Http1_0,
@@ -119,7 +121,11 @@ pub fn request(
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    _ = useSsl;
+    if (useSsl) {
+        var sc: bssl.br_ssl_client_context = undefined;
+        var xc: bssl.br_x509_minimal_context = undefined;
+        bssl.br_ssl_client_init_full(&sc, &xc, null, 0);
+    }
 
     var stream = try std.net.tcpConnectToHost(allocator, hostname, port);
     var streamWriter = stream.writer();
