@@ -112,18 +112,19 @@ fn getMethodString(method: Method) []const u8
 
 fn netSslRead(userData: ?*anyopaque, data: ?[*]u8, len: usize) callconv(.C) c_int
 {
-    const d = data orelse return 0;
+    const d = data orelse return -1;
+    var stream = @ptrCast(*std.net.Stream, @alignCast(@alignOf(*std.net.Stream), userData));
     const buf = d[0..len];
 
-    var stream = @ptrCast(*std.net.Stream, @alignCast(@alignOf(*std.net.Stream), userData));
     const bytes = stream.read(buf) catch |err| {
         std.log.err("net stream read error {}", .{err});
         return -1;
     };
     if (bytes == 0) {
         return -1;
+    } else {
+        return @intCast(c_int, bytes);
     }
-    return @intCast(c_int, bytes);
 }
 
 fn netSslWrite(userData: ?*anyopaque, data: ?[*]const u8, len: usize) callconv(.C) c_int
@@ -209,9 +210,9 @@ const NetInterface = struct {
                 if (engState == bssl.BR_SSL_CLOSED and (err == bssl.BR_ERR_OK or err == bssl.BR_ERR_IO)) {
                     // TODO why BR_ERR_IO?
                     return 0;
+                } else {
+                    return error.bsslReadFail;
                 }
-                std.log.err("br_sslio_read fail, engine state {} err {}", .{engState, err});
-                return error.bsslReadFail;
             } else {
                 return @intCast(usize, result);
             }

@@ -1,7 +1,13 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 const bssl = @import("bearssl.zig");
-const macos_certs = @cImport(@cInclude("macos_certs.h"));
+const os_certs = switch (builtin.target.os.tag) {
+    .linux => @import("linux_certs.zig"),
+    .macos => @cImport(@cInclude("macos_certs.h")),
+    .windows => @compileError("no windows yet"),
+    else => @compileError("unsupported OS"),
+};
 
 pub const RootCaList = struct {
     list: std.ArrayList(bssl.br_x509_trust_anchor),
@@ -19,7 +25,7 @@ pub const RootCaList = struct {
             .context = undefined,
         };
         errdefer state.list.deinit();
-        const rc = macos_certs.getRootCaCerts(&state, certCallback);
+        const rc = os_certs.getRootCaCerts(&state, certCallback);
         if (rc != 0) {
             return error.getRootCaCerts;
         }

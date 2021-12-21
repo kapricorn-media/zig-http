@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 const zig_bearssl = @import("deps/zig-bearssl/src/lib.zig");
@@ -34,15 +35,18 @@ pub fn build(b: *std.build.Builder) void
     testClient.setTarget(target);
     addLibClient(testClient, ".");
     zig_bearssl.linkBearSSL("deps/zig-bearssl", testClient, target);
-    testClient.addIncludeDir("src");
-    testClient.addCSourceFile("src/macos_certs.m", &[_][]const u8{
-        "-Wall",
-        "-Werror",
-        "-Wextra",
-    });
-    testClient.linkFramework("Foundation");
-    testClient.linkFramework("Security");
-    // testClient.linkLibC();
+    const targetOs = if (target.os_tag) |tag| tag else builtin.os.tag;
+    if (targetOs == .macos) {
+        testClient.addIncludeDir("src");
+        testClient.addCSourceFile("src/macos_certs.m", &[_][]const u8{
+            "-Wall",
+            "-Werror",
+            "-Wextra",
+        });
+        testClient.linkFramework("Foundation");
+        testClient.linkFramework("Security");
+    }
+    testClient.linkLibC();
 
     const runTests = b.step("test", "Run library tests");
     runTests.dependOn(&testClient.step);
