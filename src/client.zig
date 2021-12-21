@@ -1,6 +1,7 @@
 const std = @import("std");
 
-const bssl = @cImport(@cInclude("bearssl.h"));
+const bssl = @import("bearssl.zig");
+const certs = @import("certs.zig");
 
 pub const HttpVersion = enum
 {
@@ -109,6 +110,142 @@ fn getMethodString(method: Method) []const u8
     }
 }
 
+fn netSslRead(userData: ?*anyopaque, data: ?[*]u8, len: usize) callconv(.C) c_int
+{
+    const d = data orelse return 0;
+    const buf = d[0..len];
+
+    var stream = @ptrCast(*std.net.Stream, @alignCast(@alignOf(*std.net.Stream), userData));
+    const bytes = stream.read(buf) catch |err| {
+        std.log.err("net stream read error {}", .{err});
+        return -1;
+    };
+    if (bytes == 0) {
+        return -1;
+    }
+    return @intCast(c_int, bytes);
+}
+
+fn netSslWrite(userData: ?*anyopaque, data: ?[*]const u8, len: usize) callconv(.C) c_int
+{
+    const d = data orelse return 0;
+    var stream = @ptrCast(*std.net.Stream, @alignCast(@alignOf(*std.net.Stream), userData));
+    const bytes = stream.write(d[0..len]) catch |err| {
+        std.log.err("net stream write error {}", .{err});
+        return -1;
+    };
+    return @intCast(c_int, bytes);
+}
+
+const NetInterface = struct {
+    stream: std.net.Stream,
+    useSsl: bool,
+    rootCaList: certs.RootCaList,
+    sslContext: bssl.br_ssl_client_context,
+    x509Context: bssl.br_x509_minimal_context,
+    sslIoContext: bssl.br_sslio_context,
+    sslIoBuf: []u8,
+
+    const Self = @This();
+
+    fn load(self: *Self, hostname: [:0]const u8, stream: std.net.Stream, useSsl: bool, allocator: std.mem.Allocator) !void
+    {
+        self.stream = stream;
+        self.useSsl = useSsl;
+        if (useSsl) {
+            try self.rootCaList.load(allocator);
+            self.sslIoBuf = try allocator.alloc(u8, bssl.BR_SSL_BUFSIZE_BIDI);
+
+            bssl.br_ssl_client_init_full(
+                &self.sslContext, &self.x509Context,
+                &self.rootCaList.list.items[0], self.rootCaList.list.items.len
+            );
+            bssl.br_ssl_engine_set_buffer(
+                &self.sslContext.eng,
+                &self.sslIoBuf[0], self.sslIoBuf.len, 1
+            );
+
+            const result = bssl.br_ssl_client_reset(&self.sslContext, hostname, 0);
+            if (result != 1) {
+                return error.br_ssl_client_reset;
+            }
+
+            bssl.br_sslio_init(
+                &self.sslIoContext, &self.sslContext.eng,
+                netSslRead, &self.stream,
+                netSslWrite, &self.stream
+            );
+        }
+    }
+
+    fn deinit(self: *Self, allocator: std.mem.Allocator) void
+    {
+        if (self.useSsl) {
+            if (bssl.br_sslio_close(&self.sslIoContext) != 0) {
+                std.log.err("br_sslio_close failed", .{});
+            }
+            allocator.free(self.sslIoBuf);
+            self.rootCaList.deinit(allocator);
+        }
+    }
+
+    fn reader(self: *Self) std.io.Reader(*Self, anyerror, read)
+    {
+        return .{ .context = self };
+    }
+
+    fn writer(self: *Self) std.io.Writer(*Self, anyerror, write)
+    {
+        return .{ .context = self };
+    }
+
+    fn read(self: *Self, buffer: []u8) anyerror!usize
+    {
+        if (self.useSsl) {
+            const result = bssl.br_sslio_read(&self.sslIoContext, &buffer[0], buffer.len);
+            if (result < 0) {
+                const engState = bssl.br_ssl_engine_current_state(&self.sslContext.eng);
+                const err = bssl.br_ssl_engine_last_error(&self.sslContext.eng);
+                if (engState == bssl.BR_SSL_CLOSED and (err == bssl.BR_ERR_OK or err == bssl.BR_ERR_IO)) {
+                    // TODO why BR_ERR_IO?
+                    return 0;
+                }
+                std.log.err("br_sslio_read fail, engine state {} err {}", .{engState, err});
+                return error.bsslReadFail;
+            } else {
+                return @intCast(usize, result);
+            }
+        } else {
+            return try self.stream.read(buffer);
+        }
+    }
+
+    fn write(self: *Self, buffer: []const u8) anyerror!usize
+    {
+        if (self.useSsl) {
+            const result = bssl.br_sslio_write(&self.sslIoContext, &buffer[0], buffer.len);
+            if (result < 0) {
+                const err = bssl.br_ssl_engine_last_error(&self.sslContext.eng);
+                std.log.err("br_sslio_write fail, engine err {}", .{err});
+                return error.bsslWriteFail;
+            } else {
+                return @intCast(usize, result);
+            }
+        } else {
+            return try self.stream.write(buffer);
+        }
+    }
+
+    fn flush(self: *Self) !void
+    {
+        if (self.useSsl) {
+            if (bssl.br_sslio_flush(&self.sslIoContext) != 0) {
+                return error.br_sslio_flush;
+            }
+        }
+    }
+};
+
 pub fn request(
     method: Method,
     comptime useSsl: bool,
@@ -121,44 +258,45 @@ pub fn request(
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    if (useSsl) {
-        var sc: bssl.br_ssl_client_context = undefined;
-        var xc: bssl.br_x509_minimal_context = undefined;
-        bssl.br_ssl_client_init_full(&sc, &xc, null, 0);
-    }
-
     var stream = try std.net.tcpConnectToHost(allocator, hostname, port);
-    var streamWriter = stream.writer();
+    var netInterface: *NetInterface = try allocator.create(NetInterface);
+    defer allocator.destroy(netInterface);
+    try netInterface.load(hostname, stream, useSsl, allocator);
+    defer netInterface.deinit(allocator);
 
+    var netWriter = netInterface.writer();
     const contentLength = if (body) |b| b.len else 0;
     try std.fmt.format(
-        streamWriter,
+        netWriter,
         "{s} {s} HTTP/1.1\r\nHost: {s}:{}\r\nConnection: close\r\nContent-Length: {}\r\n",
         .{getMethodString(method), uri, hostname, port, contentLength}
     );
 
     if (headers) |hs| {
         for (hs) |h| {
-            try std.fmt.format(streamWriter, "{s}: {s}\r\n", .{h.name, h.value});
+            try std.fmt.format(netWriter, "{s}: {s}\r\n", .{h.name, h.value});
         }
     }
 
-    if ((try stream.write("\r\n")) != 2) {
+    if ((try netWriter.write("\r\n")) != 2) {
         return error.writeHeaderEnd;
     }
 
     if (body) |b| {
-        if ((try stream.write(b)) != b.len) {
+        if ((try netWriter.write(b)) != b.len) {
             return error.writeBody;
         }
     }
 
+    try netInterface.flush();
+
+    var netReader = netInterface.reader();
     const initialCapacity = 4096;
     outData.* = try std.ArrayList(u8).initCapacity(allocator, initialCapacity);
     errdefer outData.deinit();
     var buf: [4096]u8 = undefined;
     while (true) {
-        const readBytes = try stream.read(&buf);
+        const readBytes = try netReader.read(&buf);
         if (readBytes < 0) {
             return error.readResponse;
         }
