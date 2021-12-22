@@ -10,7 +10,7 @@ on:
 
 jobs:
   verify:
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, cloud]
     timeout-minutes: 5
 
     steps:
@@ -20,7 +20,7 @@ jobs:
           submodules: 'recursive'
 
       - name: build
-        run: /home/pi/zig-linux-aarch64-0.9.0-dev.1213+2ed928824/zig build
+        run: ~/zig-stable/zig build
 
       - name: test
-        run: /home/pi/zig-linux-aarch64-0.9.0-dev.1213+2ed928824/zig build test
+        run: ~/zig-stable/zig build test
