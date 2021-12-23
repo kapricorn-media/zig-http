@@ -1,83 +1,22 @@
 const std = @import("std");
 
+const http = @import("http-common");
+
 const bssl = @import("bearssl.zig");
 const certs = @import("certs.zig");
 
-pub const HttpVersion = enum
-{
-    Http1_0,
-    Http1_1,
-    Unknown,
-};
-
-pub const Method = enum
-{
-    Get,
-    Post,
-};
-
-pub const Header = struct
-{
-    name: []const u8,
-    value: []const u8,
-};
-
 pub const Response = struct
 {
-    version: HttpVersion,
-    code: u32,
+    version: http.Version,
+    code: http.Code,
     message: []const u8,
     numHeaders: u32,
-    headers: [MAX_HEADERS]Header,
+    headers: [http.MAX_HEADERS]http.Header,
     body: []const u8,
 
-    const MAX_HEADERS = 8 * 1024;
     const Self = @This();
 
-    fn load(self: *Self, data: []const u8) !void
-    {
-        var it = std.mem.split(u8, data, "\r\n");
-        const first = it.next() orelse {
-            return error.NoFirstLine;
-        };
-
-        var itFirst = std.mem.split(u8, first, " ");
-        const versionString = itFirst.next() orelse {
-            return error.NoHttpVersion;
-        };
-        self.version = stringToHttpVersion(versionString);
-        if (self.version == .Unknown) {
-            return error.UnknownHttpVersion;
-        }
-        const codeString = itFirst.next() orelse {
-            return error.NoHttpCode;
-        };
-        self.code = try std.fmt.parseUnsigned(u32, codeString, 10);
-        self.message = itFirst.rest();
-
-        self.numHeaders = 0;
-        while (true) {
-            const header = it.next() orelse {
-                return error.UnexpectedEndOfHeader;
-            };
-            if (header.len == 0) {
-                break;
-            }
-
-            var itHeader = std.mem.split(u8, header, ":");
-            self.headers[self.numHeaders].name = itHeader.next() orelse {
-                return error.HeaderMissingName;
-            };
-            const v = itHeader.next() orelse {
-                return error.HeaderMissingValue;
-            };
-            self.headers[self.numHeaders].value = std.mem.trimLeft(u8, v, " ");
-            self.numHeaders += 1;
-        }
-
-        self.body = it.rest();
-    }
-
+    /// For string formatting, easy printing/debugging.
     pub fn format(self: Self, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void
     {
         _ = fmt; _ = options;
@@ -87,28 +26,27 @@ pub const Response = struct
             .{self.version, self.code, self.message, self.body.len}
         );
     }
+
+    fn load(self: *Self, data: []const u8) !void
+    {
+        var it = std.mem.split(u8, data, "\r\n");
+
+        const first = it.next() orelse {
+            return error.NoFirstLine;
+        };
+        var itFirst = std.mem.split(u8, first, " ");
+        const versionString = itFirst.next() orelse return error.NoVersion;
+        self.version = http.stringToVersion(versionString) orelse return error.UnknownVersion;
+        const codeString = itFirst.next() orelse return error.NoCode;
+        const codeU32 = try std.fmt.parseUnsigned(u32, codeString, 10);
+        self.code = http.intToCode(codeU32) orelse return error.UnknownCode;
+        self.message = itFirst.rest();
+
+        try http.readHeaders(self, &it);
+
+        self.body = it.rest();
+    }
 };
-
-fn stringToHttpVersion(string: []const u8) HttpVersion
-{
-    if (std.mem.eql(u8, string, "HTTP/1.1")) {
-        return .Http1_1;
-    }
-    else if (std.mem.eql(u8, string, "HTTP/1.0")) {
-        return .Http1_0;
-    }
-    else {
-        return .Unknown;
-    }
-}
-
-fn getMethodString(method: Method) []const u8
-{
-    switch (method) {
-        .Get => return "GET",
-        .Post => return "POST",
-    }
-}
 
 fn netSslRead(userData: ?*anyopaque, data: ?[*]u8, len: usize) callconv(.C) c_int
 {
@@ -140,7 +78,7 @@ fn netSslWrite(userData: ?*anyopaque, data: ?[*]const u8, len: usize) callconv(.
 
 const NetInterface = struct {
     stream: std.net.Stream,
-    useSsl: bool,
+    https: bool,
     rootCaList: certs.RootCaList,
     sslContext: bssl.br_ssl_client_context,
     x509Context: bssl.br_x509_minimal_context,
@@ -149,11 +87,11 @@ const NetInterface = struct {
 
     const Self = @This();
 
-    fn load(self: *Self, hostname: [:0]const u8, stream: std.net.Stream, useSsl: bool, allocator: std.mem.Allocator) !void
+    fn load(self: *Self, hostname: [:0]const u8, stream: std.net.Stream, https: bool, allocator: std.mem.Allocator) !void
     {
         self.stream = stream;
-        self.useSsl = useSsl;
-        if (useSsl) {
+        self.https = https;
+        if (https) {
             try self.rootCaList.load(allocator);
             self.sslIoBuf = try allocator.alloc(u8, bssl.BR_SSL_BUFSIZE_BIDI);
 
@@ -181,7 +119,7 @@ const NetInterface = struct {
 
     fn deinit(self: *Self, allocator: std.mem.Allocator) void
     {
-        if (self.useSsl) {
+        if (self.https) {
             if (bssl.br_sslio_close(&self.sslIoContext) != 0) {
                 std.log.err("br_sslio_close failed", .{});
             }
@@ -202,7 +140,7 @@ const NetInterface = struct {
 
     fn read(self: *Self, buffer: []u8) anyerror!usize
     {
-        if (self.useSsl) {
+        if (self.https) {
             const result = bssl.br_sslio_read(&self.sslIoContext, &buffer[0], buffer.len);
             if (result < 0) {
                 const engState = bssl.br_ssl_engine_current_state(&self.sslContext.eng);
@@ -223,7 +161,7 @@ const NetInterface = struct {
 
     fn write(self: *Self, buffer: []const u8) anyerror!usize
     {
-        if (self.useSsl) {
+        if (self.https) {
             const result = bssl.br_sslio_write(&self.sslIoContext, &buffer[0], buffer.len);
             if (result < 0) {
                 const err = bssl.br_ssl_engine_last_error(&self.sslContext.eng);
@@ -239,7 +177,7 @@ const NetInterface = struct {
 
     fn flush(self: *Self) !void
     {
-        if (self.useSsl) {
+        if (self.https) {
             if (bssl.br_sslio_flush(&self.sslIoContext) != 0) {
                 return error.br_sslio_flush;
             }
@@ -248,12 +186,12 @@ const NetInterface = struct {
 };
 
 pub fn request(
-    method: Method,
-    comptime useSsl: bool,
+    method: http.Method,
+    https: bool,
     port: u16,
     hostname: [:0]const u8,
     uri: []const u8,
-    headers: ?[]const Header,
+    headers: ?[]const http.Header,
     body: ?[]const u8,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
@@ -262,7 +200,7 @@ pub fn request(
     var stream = try std.net.tcpConnectToHost(allocator, hostname, port);
     var netInterface: *NetInterface = try allocator.create(NetInterface);
     defer allocator.destroy(netInterface);
-    try netInterface.load(hostname, stream, useSsl, allocator);
+    try netInterface.load(hostname, stream, https, allocator);
     defer netInterface.deinit(allocator);
 
     var netWriter = netInterface.writer();
@@ -270,7 +208,7 @@ pub fn request(
     try std.fmt.format(
         netWriter,
         "{s} {s} HTTP/1.1\r\nHost: {s}:{}\r\nConnection: close\r\nContent-Length: {}\r\n",
-        .{getMethodString(method), uri, hostname, port, contentLength}
+        .{http.methodToString(method), uri, hostname, port, contentLength}
     );
 
     if (headers) |hs| {
@@ -312,22 +250,22 @@ pub fn request(
 }
 
 pub fn get(
-    comptime useSsl: bool,
+    https: bool,
     port: u16,
     hostname: [:0]const u8,
     uri: []const u8,
-    headers: ?[]const Header,
+    headers: ?[]const http.Header,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    return request(.Get, useSsl, port, hostname, uri, headers, null, allocator, outData, outResponse);
+    return request(.Get, https, port, hostname, uri, headers, null, allocator, outData, outResponse);
 }
 
 pub fn httpGet(
     hostname: [:0]const u8,
     uri: []const u8,
-    headers: ?[]const Header,
+    headers: ?[]const http.Header,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
@@ -338,7 +276,7 @@ pub fn httpGet(
 pub fn httpsGet(
     hostname: [:0]const u8,
     uri: []const u8,
-    headers: ?[]const Header,
+    headers: ?[]const http.Header,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
@@ -347,23 +285,23 @@ pub fn httpsGet(
 }
 
 pub fn post(
-    comptime useSsl: bool,
+    https: bool,
     port: u16,
     hostname: [:0]const u8,
     uri: []const u8,
-    headers: ?[]const Header,
+    headers: ?[]const http.Header,
     body: ?[]const u8,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
     outResponse: *Response) !void
 {
-    return request(.Post, useSsl, port, hostname, uri, headers, body, allocator, outData, outResponse);
+    return request(.Post, https, port, hostname, uri, headers, body, allocator, outData, outResponse);
 }
 
 pub fn httpPost(
     hostname: [:0]const u8,
     uri: []const u8,
-    headers: ?[]const Header,
+    headers: ?[]const http.Header,
     body: ?[]const u8,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
@@ -375,7 +313,7 @@ pub fn httpPost(
 pub fn httpsPost(
     hostname: [:0]const u8,
     uri: []const u8,
-    headers: ?[]const Header,
+    headers: ?[]const http.Header,
     body: ?[]const u8,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
