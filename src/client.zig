@@ -1,8 +1,8 @@
 const std = @import("std");
 
+const bssl = @import("bearssl");
 const http = @import("http-common");
 
-const bssl = @import("bearssl.zig");
 const certs = @import("certs.zig");
 
 pub const Response = struct
@@ -80,9 +80,9 @@ const NetInterface = struct {
     stream: std.net.Stream,
     https: bool,
     rootCaList: certs.RootCaList,
-    sslContext: bssl.br_ssl_client_context,
-    x509Context: bssl.br_x509_minimal_context,
-    sslIoContext: bssl.br_sslio_context,
+    sslContext: bssl.c.br_ssl_client_context,
+    x509Context: bssl.c.br_x509_minimal_context,
+    sslIoContext: bssl.c.br_sslio_context,
     sslIoBuf: []u8,
 
     const Self = @This();
@@ -93,23 +93,23 @@ const NetInterface = struct {
         self.https = https;
         if (https) {
             try self.rootCaList.load(allocator);
-            self.sslIoBuf = try allocator.alloc(u8, bssl.BR_SSL_BUFSIZE_BIDI);
+            self.sslIoBuf = try allocator.alloc(u8, bssl.c.BR_SSL_BUFSIZE_BIDI);
 
-            bssl.br_ssl_client_init_full(
+            bssl.c.br_ssl_client_init_full(
                 &self.sslContext, &self.x509Context,
                 &self.rootCaList.list.items[0], self.rootCaList.list.items.len
             );
-            bssl.br_ssl_engine_set_buffer(
+            bssl.c.br_ssl_engine_set_buffer(
                 &self.sslContext.eng,
                 &self.sslIoBuf[0], self.sslIoBuf.len, 1
             );
 
-            const result = bssl.br_ssl_client_reset(&self.sslContext, hostname, 0);
+            const result = bssl.c.br_ssl_client_reset(&self.sslContext, hostname, 0);
             if (result != 1) {
                 return error.br_ssl_client_reset;
             }
 
-            bssl.br_sslio_init(
+            bssl.c.br_sslio_init(
                 &self.sslIoContext, &self.sslContext.eng,
                 netSslRead, &self.stream,
                 netSslWrite, &self.stream
@@ -120,7 +120,7 @@ const NetInterface = struct {
     fn deinit(self: *Self, allocator: std.mem.Allocator) void
     {
         if (self.https) {
-            if (bssl.br_sslio_close(&self.sslIoContext) != 0) {
+            if (bssl.c.br_sslio_close(&self.sslIoContext) != 0) {
                 std.log.err("br_sslio_close failed", .{});
             }
             allocator.free(self.sslIoBuf);
@@ -141,11 +141,11 @@ const NetInterface = struct {
     fn read(self: *Self, buffer: []u8) anyerror!usize
     {
         if (self.https) {
-            const result = bssl.br_sslio_read(&self.sslIoContext, &buffer[0], buffer.len);
+            const result = bssl.c.br_sslio_read(&self.sslIoContext, &buffer[0], buffer.len);
             if (result < 0) {
-                const engState = bssl.br_ssl_engine_current_state(&self.sslContext.eng);
-                const err = bssl.br_ssl_engine_last_error(&self.sslContext.eng);
-                if (engState == bssl.BR_SSL_CLOSED and (err == bssl.BR_ERR_OK or err == bssl.BR_ERR_IO)) {
+                const engState = bssl.c.br_ssl_engine_current_state(&self.sslContext.eng);
+                const err = bssl.c.br_ssl_engine_last_error(&self.sslContext.eng);
+                if (engState == bssl.c.BR_SSL_CLOSED and (err == bssl.c.BR_ERR_OK or err == bssl.c.BR_ERR_IO)) {
                     // TODO why BR_ERR_IO?
                     return 0;
                 } else {
@@ -162,9 +162,9 @@ const NetInterface = struct {
     fn write(self: *Self, buffer: []const u8) anyerror!usize
     {
         if (self.https) {
-            const result = bssl.br_sslio_write(&self.sslIoContext, &buffer[0], buffer.len);
+            const result = bssl.c.br_sslio_write(&self.sslIoContext, &buffer[0], buffer.len);
             if (result < 0) {
-                const err = bssl.br_ssl_engine_last_error(&self.sslContext.eng);
+                const err = bssl.c.br_ssl_engine_last_error(&self.sslContext.eng);
                 std.log.err("br_sslio_write fail, engine err {}", .{err});
                 return error.bsslWriteFail;
             } else {
@@ -178,7 +178,7 @@ const NetInterface = struct {
     fn flush(self: *Self) !void
     {
         if (self.https) {
-            if (bssl.br_sslio_flush(&self.sslIoContext) != 0) {
+            if (bssl.c.br_sslio_flush(&self.sslIoContext) != 0) {
                 return error.br_sslio_flush;
             }
         }

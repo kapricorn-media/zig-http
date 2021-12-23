@@ -1,8 +1,7 @@
 const std = @import("std");
 
+const bssl = @import("bearssl");
 const http = @import("http-common");
-
-const bssl = @import("bearssl.zig");
 
 /// Server request callback type.
 /// Don't return errors for normal application-specific stuff you can handle thru HTTP codes.
@@ -43,9 +42,15 @@ pub const Request = struct {
     }
 };
 
+fn pemCallback(data: []const u8) !void
+{
+    // std.log.err("pemCallback {}", .{data.len});
+    _ = data;
+}
+
 pub const HttpsOptions = struct {
-    certificatePath: []const u8,
-    privateKeyPath: []const u8,
+    certChainFileData: []const u8,
+    privateKeyFileData: []const u8,
 };
 
 pub const Server = struct {
@@ -75,7 +80,7 @@ pub const Server = struct {
         };
 
         if (httpsOptions) |options| {
-            _ = options;
+            try bssl.decodePem(options.certChainFileData, pemCallback, allocator);
         }
 
         return self;

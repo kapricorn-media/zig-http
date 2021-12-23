@@ -57,10 +57,29 @@ fn createHttpCodeCallback(comptime code: http.Code) server.CallbackType
     return Wrapper.callback;
 }
 
+test "quick https"
+{
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
+    var allocator = gpa.allocator();
+
+    const callback = createHttpCodeCallback(._200);
+    const httpsOptions = server.HttpsOptions {
+        .certChainFileData = @embedFile("localhost.crt"),
+        .privateKeyFileData = @embedFile("localhost.key"),
+    };
+    var s = try server.Server.init(callback, httpsOptions, allocator);
+    defer s.deinit();
+    try serverThreadStartAndWait(&s);
+    defer {
+        s.stop();
+        _serverThread.join();
+    }
+}
+
 fn testCode(comptime code: http.Code, https: bool, allocator: std.mem.Allocator) !void
 {
     const callback = createHttpCodeCallback(code);
-    try expect(!https);
     var s = try server.Server.init(callback, null, allocator);
     defer s.deinit();
     try serverThreadStartAndWait(&s);

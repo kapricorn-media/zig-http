@@ -1,7 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
-const zig_bearssl = @import("deps/zig-bearssl/src/lib.zig");
+const zig_bearssl_build = @import("deps/zig-bearssl/build.zig");
 
 pub fn build(b: *std.build.Builder) void
 {
@@ -12,14 +12,14 @@ pub fn build(b: *std.build.Builder) void
     testClient.setBuildMode(mode);
     testClient.setTarget(target);
     addLibClient(testClient, target, ".");
-    zig_bearssl.linkBearSSL("deps/zig-bearssl", testClient, target);
+    zig_bearssl_build.addLib(testClient, target, "deps/zig-bearssl");
     testClient.linkLibC();
 
     const testServer = b.addTest("test/test_server.zig");
     testServer.setBuildMode(mode);
     testServer.setTarget(target);
     addLibServer(testServer, target, ".");
-    zig_bearssl.linkBearSSL("deps/zig-bearssl", testServer, target);
+    zig_bearssl_build.addLib(testServer, target, "deps/zig-bearssl");
     testServer.linkLibC();
 
     const testBoth = b.addTest("test/test_both.zig");
@@ -28,7 +28,7 @@ pub fn build(b: *std.build.Builder) void
     addLibCommon(testBoth, target, ".");
     addLibClient(testBoth, target, ".");
     addLibServer(testBoth, target, ".");
-    zig_bearssl.linkBearSSL("deps/zig-bearssl", testBoth, target);
+    zig_bearssl_build.addLib(testBoth, target, "deps/zig-bearssl");
     testBoth.linkLibC();
 
     const runTests = b.step("test", "Run library tests");
@@ -43,7 +43,7 @@ pub fn addLibCommon(
     comptime dir: []const u8) void
 {
     _ = target;
-    const pkg = getPackageCommon(dir);
+    const pkg = getPkgCommon(dir);
     step.addPackage(pkg);
 }
 
@@ -58,7 +58,8 @@ pub fn addLibClient(
             .path = dir ++ "/src/client.zig",
         },
         .dependencies = &[_]std.build.Pkg {
-            getPackageCommon(dir)
+            getPkgCommon(dir),
+            zig_bearssl_build.getPkg(dir ++ "/deps/zig-bearssl"),
         },
     };
     step.addPackage(pkg);
@@ -87,13 +88,14 @@ pub fn addLibServer(
             .path = dir ++ "/src/server.zig",
         },
         .dependencies = &[_]std.build.Pkg {
-            getPackageCommon(dir)
+            getPkgCommon(dir),
+            zig_bearssl_build.getPkg(dir ++ "/deps/zig-bearssl"),
         },
     };
     step.addPackage(pkg);
 }
 
-fn getPackageCommon(comptime dir: []const u8) std.build.Pkg
+fn getPkgCommon(comptime dir: []const u8) std.build.Pkg
 {
     return .{
         .name = "http-common",

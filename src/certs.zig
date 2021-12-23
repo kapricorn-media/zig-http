@@ -1,16 +1,16 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
-const bssl = @import("bearssl.zig");
+const bssl = @import("bearssl");
 
 pub const RootCaList = struct {
-    list: std.ArrayList(bssl.br_x509_trust_anchor),
+    list: std.ArrayList(bssl.c.br_x509_trust_anchor),
 
     const Self = @This();
 
     pub fn load(self: *Self, allocator: std.mem.Allocator) !void
     {
-        self.list = std.ArrayList(bssl.br_x509_trust_anchor).init(allocator);
+        self.list = std.ArrayList(bssl.c.br_x509_trust_anchor).init(allocator);
 
         switch (builtin.target.os.tag) {
             .linux => {
@@ -22,8 +22,8 @@ pub const RootCaList = struct {
                 defer allocator.free(fileData);
 
                 var remaining = fileData;
-                var pemDecoder: bssl.br_pem_decoder_context = undefined;
-                bssl.br_pem_decoder_init(&pemDecoder);
+                var pemDecoder: bssl.c.br_pem_decoder_context = undefined;
+                bssl.c.br_pem_decoder_init(&pemDecoder);
                 var pemState = PemState {
                     .success = false,
                     .x509Decoder = undefined,
@@ -31,25 +31,25 @@ pub const RootCaList = struct {
                 };
                 defer pemState.list.deinit();
                 while (remaining.len > 0) {
-                    const result = bssl.br_pem_decoder_push(&pemDecoder, &remaining[0], remaining.len);
+                    const result = bssl.c.br_pem_decoder_push(&pemDecoder, &remaining[0], remaining.len);
                     if (result == 0) {
                         while (true) {
-                            const event = bssl.br_pem_decoder_event(&pemDecoder);
+                            const event = bssl.c.br_pem_decoder_event(&pemDecoder);
                             switch (event) {
                                 0 => break,
-                                bssl.BR_PEM_BEGIN_OBJ => {
+                                bssl.c.BR_PEM_BEGIN_OBJ => {
                                     pemState.success = true;
-                                    bssl.br_x509_decoder_init(&pemState.x509Decoder, x509Callback, &pemState);
+                                    bssl.c.br_x509_decoder_init(&pemState.x509Decoder, x509Callback, &pemState);
                                     pemState.list.clearRetainingCapacity();
-                                    bssl.br_pem_decoder_setdest(&pemDecoder, pemCallback, &pemState);
+                                    bssl.c.br_pem_decoder_setdest(&pemDecoder, pemCallback, &pemState);
                                 },
-                                bssl.BR_PEM_END_OBJ => {
+                                bssl.c.BR_PEM_END_OBJ => {
                                     if (!pemState.success) {
                                         return error.pemStateError;
                                     }
 
                                     // TODO dupe code
-                                    const rc = bssl.br_x509_decoder_last_error(&pemState.x509Decoder);
+                                    const rc = bssl.c.br_x509_decoder_last_error(&pemState.x509Decoder);
                                     if (rc != 0) {
                                         return error.x509DecoderError;
                                     }
@@ -60,15 +60,15 @@ pub const RootCaList = struct {
                                     ta.dn.data = &dnBytesCopy[0];
                                     ta.dn.len = dnBytesCopy.len;
 
-                                    const pkey = bssl.br_x509_decoder_get_pkey(&pemState.x509Decoder);
+                                    const pkey = bssl.c.br_x509_decoder_get_pkey(&pemState.x509Decoder);
                                     if (pkey == null) {
                                         return error.br_x509_decoder_get_pkey;
                                     }
                                     try copyBrPublicKey(&ta.pkey, pkey, allocator);
-                                    const isCA = bssl.br_x509_decoder_isCA(&pemState.x509Decoder);
+                                    const isCA = bssl.c.br_x509_decoder_isCA(&pemState.x509Decoder);
                                     ta.flags = @intCast(c_uint, isCA);
                                 },
-                                bssl.BR_PEM_ERROR => return error.pemDecoderError,
+                                bssl.c.BR_PEM_ERROR => return error.pemDecoderError,
                                 else => return error.badPemDecoderEvent,
                             }
                         }
@@ -111,7 +111,7 @@ pub const RootCaList = struct {
 
 const PemState = struct {
     success: bool,
-    x509Decoder: bssl.br_x509_decoder_context,
+    x509Decoder: bssl.c.br_x509_decoder_context,
     list: std.ArrayList(u8),
 };
 
@@ -128,14 +128,14 @@ fn x509Callback(userData: ?*anyopaque, data: ?*const anyopaque, len: usize) call
 fn pemCallback(userData: ?*anyopaque, data: ?*const anyopaque, len: usize) callconv(.C) void
 {
     var state = @ptrCast(*PemState, @alignCast(@alignOf(*PemState), userData));
-    bssl.br_x509_decoder_push(&state.x509Decoder, data, len);
+    bssl.c.br_x509_decoder_push(&state.x509Decoder, data, len);
 }
 
 const State = struct {
     success: bool,
     allocator: std.mem.Allocator,
-    list: *std.ArrayList(bssl.br_x509_trust_anchor),
-    context: bssl.br_x509_decoder_context,
+    list: *std.ArrayList(bssl.c.br_x509_trust_anchor),
+    context: bssl.c.br_x509_decoder_context,
 };
 
 fn copyBrBytes(dst: *[*c]u8, src: [*]const u8, len: usize, allocator: std.mem.Allocator) !void
@@ -146,18 +146,18 @@ fn copyBrBytes(dst: *[*c]u8, src: [*]const u8, len: usize, allocator: std.mem.Al
 }
 
 fn copyBrPublicKey(
-    dst: *bssl.br_x509_pkey,
-    src: *const bssl.br_x509_pkey,
+    dst: *bssl.c.br_x509_pkey,
+    src: *const bssl.c.br_x509_pkey,
     allocator: std.mem.Allocator) !void
 {
     switch (src.key_type) {
-        bssl.BR_KEYTYPE_RSA => {
+        bssl.c.BR_KEYTYPE_RSA => {
             try copyBrBytes(&dst.key.rsa.n, src.key.rsa.n, src.key.rsa.nlen, allocator);
             dst.key.rsa.nlen = src.key.rsa.nlen;
             try copyBrBytes(&dst.key.rsa.e, src.key.rsa.e, src.key.rsa.elen, allocator);
             dst.key.rsa.elen = src.key.rsa.elen;
         },
-        bssl.BR_KEYTYPE_EC => {
+        bssl.c.BR_KEYTYPE_EC => {
             dst.key.ec.curve = src.key.ec.curve;
             try copyBrBytes(&dst.key.ec.q, src.key.ec.q, src.key.ec.qlen, allocator);
             dst.key.ec.qlen = src.key.ec.qlen;
@@ -167,14 +167,14 @@ fn copyBrPublicKey(
     dst.key_type = src.key_type;
 }
 
-fn freeBrPublicKey(key: *const bssl.br_x509_pkey, allocator: std.mem.Allocator) void
+fn freeBrPublicKey(key: *const bssl.c.br_x509_pkey, allocator: std.mem.Allocator) void
 {
     switch (key.key_type) {
-        bssl.BR_KEYTYPE_RSA => {
+        bssl.c.BR_KEYTYPE_RSA => {
             allocator.free(key.key.rsa.n[0..key.key.rsa.nlen]);
             allocator.free(key.key.rsa.e[0..key.key.rsa.elen]);
         },
-        bssl.BR_KEYTYPE_EC => {
+        bssl.c.BR_KEYTYPE_EC => {
             allocator.free(key.key.ec.q[0..key.key.ec.qlen]);
         },
         else => {},
@@ -206,13 +206,13 @@ fn certCallback(userData: ?*anyopaque, cBytes: [*c]const u8, length: c_int) call
         .success = true,
         .list = &dnList,
     };
-    bssl.br_x509_decoder_init(&state.context, dnCallback, &dnState);
+    bssl.c.br_x509_decoder_init(&state.context, dnCallback, &dnState);
 
     const bytes = cBytes[0..@intCast(usize, length)];
-    bssl.br_x509_decoder_push(&state.context, &bytes[0], bytes.len);
+    bssl.c.br_x509_decoder_push(&state.context, &bytes[0], bytes.len);
 
     // TODO dupe code
-    const rc = bssl.br_x509_decoder_last_error(&state.context);
+    const rc = bssl.c.br_x509_decoder_last_error(&state.context);
     if (rc != 0) {
         std.log.err("decode failed rc {}", .{rc});
         state.success = false;
@@ -239,7 +239,7 @@ fn certCallback(userData: ?*anyopaque, cBytes: [*c]const u8, length: c_int) call
     ta.dn.data = &dnBytesCopy[0];
     ta.dn.len = dnBytesCopy.len;
 
-    const pkey = bssl.br_x509_decoder_get_pkey(&state.context);
+    const pkey = bssl.c.br_x509_decoder_get_pkey(&state.context);
     if (pkey == null) {
         std.log.err("null public key after decoding", .{});
         state.success = false;
@@ -250,6 +250,6 @@ fn certCallback(userData: ?*anyopaque, cBytes: [*c]const u8, length: c_int) call
         state.success = false;
         return;
     };
-    const isCA = bssl.br_x509_decoder_isCA(&state.context);
+    const isCA = bssl.c.br_x509_decoder_isCA(&state.context);
     ta.flags = @intCast(c_uint, isCA);
 }
