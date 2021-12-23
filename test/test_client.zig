@@ -4,6 +4,7 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualSlices = std.testing.expectEqualSlices;
 
 const client = @import("http-client");
+const http = @import("http-common");
 
 test "HTTP GET www.google.com"
 {
@@ -15,7 +16,7 @@ test "HTTP GET www.google.com"
     var response: client.Response = undefined;
     try client.httpGet("www.google.com", "/", null, allocator, &data, &response);
     defer data.deinit();
-    try expectEqual(@as(u32, 200), response.code);
+    try expectEqual(http.Code._200, response.code);
     try expectEqualSlices(u8, "OK", response.message);
     try expect(response.body.len > 0);
 }
@@ -30,7 +31,7 @@ test "HTTPS GET www.google.com"
     var response: client.Response = undefined;
     try client.httpsGet("www.google.com", "/", null, allocator, &data, &response);
     defer data.deinit();
-    try expectEqual(@as(u32, 200), response.code);
+    try expectEqual(http.Code._200, response.code);
     try expectEqualSlices(u8, "OK", response.message);
     try expect(response.body.len > 0);
 }

@@ -6,6 +6,15 @@ const http = @import("http-common");
 const certs = @import("certs.zig");
 const net_io = @import("net_io.zig");
 
+pub const RequestError = error {
+    ConnectError,
+    AllocError,
+    HttpsError,
+    WriteError,
+    ReadError,
+    ResponseError,
+};
+
 pub const Response = struct
 {
     version: http.Version,
@@ -91,53 +100,81 @@ pub fn request(
     body: ?[]const u8,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
-    outResponse: *Response) !void
+    outResponse: *Response) RequestError!void
 {
-    var tcpStream = try std.net.tcpConnectToHost(allocator, hostname, port);
+    var tcpStream = std.net.tcpConnectToHost(allocator, hostname, port) catch |err| {
+        std.log.err("tcpConnectToHost error {}", .{err});
+        return RequestError.ConnectError;
+    };
+    defer tcpStream.close();
 
-    var httpsState: ?*HttpsState = if (https) try allocator.create(HttpsState) else null;
+    var httpsState: ?*HttpsState = blk: {
+        if (https) {
+            break :blk allocator.create(HttpsState) catch {
+                return RequestError.AllocError;
+            };
+        } else {
+            break :blk null;
+        }
+    };
     defer if (httpsState) |state| allocator.destroy(state);
-
-    if (httpsState) |state| try state.load(hostname, allocator);
+    if (httpsState) |state| state.load(hostname, allocator) catch |err| {
+        std.log.err("httpState load error {}", .{err});
+    };
     defer if (httpsState) |state| state.deinit(allocator);
 
     var engine = if (httpsState) |_| &httpsState.?.sslContext.eng else null;
-    const stream = net_io.Stream.init(tcpStream, engine);
-    defer stream.close();
+    var stream: net_io.Stream = undefined;
+    stream.load(tcpStream, engine);
+    defer stream.deinit();
 
     var writer = stream.writer();
     const contentLength = if (body) |b| b.len else 0;
-    try std.fmt.format(
+    std.fmt.format(
         writer,
         "{s} {s} HTTP/1.1\r\nHost: {s}:{}\r\nConnection: close\r\nContent-Length: {}\r\n",
         .{http.methodToString(method), uri, hostname, port, contentLength}
-    );
+    ) catch |err| switch (err) {
+        error.BsslWriteFail => return RequestError.HttpsError,
+        else => return RequestError.WriteError,
+    };
 
     if (headers) |hs| {
         for (hs) |h| {
-            try std.fmt.format(writer, "{s}: {s}\r\n", .{h.name, h.value});
+            std.fmt.format(writer, "{s}: {s}\r\n", .{h.name, h.value}) catch |err| switch (err) {
+                error.BsslWriteFail => return RequestError.HttpsError,
+                else => return RequestError.WriteError,
+            };
         }
     }
 
-    if ((try writer.write("\r\n")) != 2) {
-        return error.writeHeaderEnd;
-    }
+    writer.writeAll("\r\n") catch |err| switch (err) {
+        error.BsslWriteFail => return RequestError.HttpsError,
+        else => return RequestError.WriteError,
+    };
 
     if (body) |b| {
-        if ((try writer.write(b)) != b.len) {
-            return error.writeBody;
-        }
+        writer.writeAll(b) catch |err| switch (err) {
+            error.BsslWriteFail => return RequestError.HttpsError,
+            else => return RequestError.WriteError,
+        };
     }
 
-    try stream.flush();
+    stream.flush() catch return RequestError.WriteError;
 
     var reader = stream.reader();
     const initialCapacity = 4096;
-    outData.* = try std.ArrayList(u8).initCapacity(allocator, initialCapacity);
+    outData.* = std.ArrayList(u8).initCapacity(allocator, initialCapacity) catch |err| {
+        std.log.err("ArrayList initCapacity error {}", .{err});
+        return RequestError.AllocError;
+    };
     errdefer outData.deinit();
     var buf: [4096]u8 = undefined;
     while (true) {
-        const readBytes = try reader.read(&buf);
+        const readBytes = reader.read(&buf) catch |err| switch (err) {
+            error.BsslReadFail => return RequestError.HttpsError,
+            else => return RequestError.ReadError,
+        };
         if (readBytes < 0) {
             return error.readResponse;
         }
@@ -145,10 +182,12 @@ pub fn request(
             break;
         }
 
-        try outData.appendSlice(buf[0..@intCast(usize, readBytes)]);
+        outData.appendSlice(buf[0..@intCast(usize, readBytes)]) catch {
+            return RequestError.AllocError;
+        };
     }
 
-    try outResponse.load(outData.items);
+    outResponse.load(outData.items) catch return RequestError.ResponseError;
 }
 
 pub fn get(
@@ -159,9 +198,9 @@ pub fn get(
     headers: ?[]const http.Header,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
-    outResponse: *Response) !void
+    outResponse: *Response) RequestError!void
 {
-    return request(.Get, https, port, hostname, uri, headers, null, allocator, outData, outResponse);
+    try request(.Get, https, port, hostname, uri, headers, null, allocator, outData, outResponse);
 }
 
 pub fn httpGet(
@@ -170,9 +209,9 @@ pub fn httpGet(
     headers: ?[]const http.Header,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
-    outResponse: *Response) !void
+    outResponse: *Response) RequestError!void
 {
-    return get(false, 80, hostname, uri, headers, allocator, outData, outResponse);
+    try get(false, 80, hostname, uri, headers, allocator, outData, outResponse);
 }
 
 pub fn httpsGet(
@@ -181,9 +220,9 @@ pub fn httpsGet(
     headers: ?[]const http.Header,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
-    outResponse: *Response) !void
+    outResponse: *Response) RequestError!void
 {
-    return get(true, 443, hostname, uri, headers, allocator, outData, outResponse);
+    try get(true, 443, hostname, uri, headers, allocator, outData, outResponse);
 }
 
 pub fn post(
@@ -195,9 +234,9 @@ pub fn post(
     body: ?[]const u8,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
-    outResponse: *Response) !void
+    outResponse: *Response) RequestError!void
 {
-    return request(.Post, https, port, hostname, uri, headers, body, allocator, outData, outResponse);
+    try request(.Post, https, port, hostname, uri, headers, body, allocator, outData, outResponse);
 }
 
 pub fn httpPost(
@@ -207,9 +246,9 @@ pub fn httpPost(
     body: ?[]const u8,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
-    outResponse: *Response) !void
+    outResponse: *Response) RequestError!void
 {
-    return post(false, 80, hostname, uri, headers, body, allocator, outData, outResponse);
+    try post(false, 80, hostname, uri, headers, body, allocator, outData, outResponse);
 }
 
 pub fn httpsPost(
@@ -219,7 +258,7 @@ pub fn httpsPost(
     body: ?[]const u8,
     allocator: std.mem.Allocator,
     outData: *std.ArrayList(u8),
-    outResponse: *Response) !void
+    outResponse: *Response) RequestError!void
 {
-    return post(true, 443, hostname, uri, headers, body, allocator, outData, outResponse);
+    try post(true, 443, hostname, uri, headers, body, allocator, outData, outResponse);
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const expect = std.testing.expect;
+const expectError = std.testing.expectError;
 const expectEqual = std.testing.expectEqual;
 const expectEqualSlices = std.testing.expectEqualSlices;
 
@@ -63,12 +64,20 @@ test "HTTPS GET / 200"
     defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
     var allocator = gpa.allocator();
 
-    const callback = createHttpCodeCallback(._200);
+    const Wrapper = struct {
+        fn callback(request: *const server.Request, writer: server.Writer) !void
+        {
+            _ = request;
+            try server.writeCode(writer, ._200);
+            try server.writeEndHeader(writer);
+        }
+    };
+
     const httpsOptions = server.HttpsOptions {
         .certChainFileData = @embedFile("localhost.crt"),
         .privateKeyFileData = @embedFile("localhost.key"),
     };
-    var s = try server.Server.init(callback, httpsOptions, allocator);
+    var s = try server.Server.init(Wrapper.callback, httpsOptions, allocator);
     defer s.deinit();
     try serverThreadStartAndWait(&s);
     defer {
@@ -76,14 +85,13 @@ test "HTTPS GET / 200"
         _serverThread.join();
     }
 
-    // var responseData: std.ArrayList(u8) = undefined;
-    // var response: client.Response = undefined;
-    // try client.get(true, TEST_PORT, "localhost", "/", null, allocator, &responseData, &response);
-    // defer responseData.deinit();
-
-    // try expectEqual(http.Code._200, response.code);
-    // try expectEqualSlices(u8, "OK", response.message);
-    // try expectEqual(@as(usize, 0), response.body.len);
+    var responseData: std.ArrayList(u8) = undefined;
+    var response: client.Response = undefined;
+    // localhost certificate not in trusted CAs
+    try expectError(
+        client.RequestError.HttpsError,
+        client.get(true, TEST_PORT, "localhost", "/", null, allocator, &responseData, &response)
+    );
 }
 
 fn testCode(comptime code: http.Code, https: bool, allocator: std.mem.Allocator) !void

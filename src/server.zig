@@ -44,48 +44,15 @@ pub const Request = struct {
     }
 };
 
-const HttpsInitState = struct {
-    allocator: std.mem.Allocator,
-    chain: std.ArrayList(bssl.c.br_x509_certificate),
-    skeyContext: bssl.c.br_skey_decoder_context,
-    privateKey: ?*const bssl.c.br_rsa_private_key,
-};
-
-fn pemCallbackCertChain(userData: *HttpsInitState, data: []const u8) !void
-{
-    const copy = try userData.allocator.dupe(u8, data);
-    var newChainCert = try userData.chain.addOne();
-    newChainCert.data = &copy[0];
-    newChainCert.data_len = copy.len;
-}
-
-fn pemCallbackPrivateKey(userData: *HttpsInitState, data: []const u8) !void
-{
-    if (userData.privateKey != null) {
-        return error.MultiplePrivateKeys;
-    }
-
-    bssl.c.br_skey_decoder_init(&userData.skeyContext);
-    bssl.c.br_skey_decoder_push(&userData.skeyContext, &data[0], data.len);
-    const decoderErr = bssl.c.br_skey_decoder_last_error(&userData.skeyContext);
-    if (decoderErr != 0) {
-        return error.br_skey_decoder_error;
-    }
-    const keyType = bssl.c.br_skey_decoder_key_type(&userData.skeyContext);
-    if (keyType != bssl.c.BR_KEYTYPE_RSA) {
-        return error.nonRsaKeyType;
-    }
-    userData.privateKey = bssl.c.br_skey_decoder_get_rsa(&userData.skeyContext) orelse {
-        return error.getRsaFailed;
-    };
-}
-
 pub const HttpsOptions = struct {
     certChainFileData: []const u8,
     privateKeyFileData: []const u8,
 };
 
-pub const HttpsState = struct {
+const HttpsState = struct {
+    chain: std.ArrayList(bssl.c.br_x509_certificate),
+    skeyContext: bssl.c.br_skey_decoder_context,
+    privateKey: *const bssl.c.br_rsa_private_key,
     context: bssl.c.br_ssl_server_context,
     buf: []u8,
 };
@@ -121,23 +88,20 @@ pub const Server = struct {
 
         if (httpsOptions) |options| {
             self.httpsState = HttpsState {
+                .chain = std.ArrayList(bssl.c.br_x509_certificate).init(allocator),
+                .skeyContext = undefined,
+                .privateKey = undefined,
                 .context = undefined,
                 .buf = try allocator.alloc(u8, bssl.c.BR_SSL_BUFSIZE_BIDI),
             };
 
             var initState = HttpsInitState {
                 .allocator = allocator,
-                .chain = std.ArrayList(bssl.c.br_x509_certificate).init(allocator),
-                .skeyContext = undefined,
-                .privateKey = null,
+                .chain = &self.httpsState.?.chain,
+                .skeyContext = &self.httpsState.?.skeyContext,
+                .privateKeySet = false,
+                .privateKey = &self.httpsState.?.privateKey,
             };
-            defer {
-                for (initState.chain.items) |chain| {
-                    const bytes = chain.data[0..chain.data_len];
-                    allocator.free(bytes);
-                }
-                initState.chain.deinit();
-            }
 
             try bssl.decodePem(
                 options.certChainFileData,
@@ -157,14 +121,14 @@ pub const Server = struct {
                 pemCallbackPrivateKey,
                 allocator
             );
-            if (initState.privateKey == null) {
+            if (!initState.privateKeySet) {
                 return error.NoPrivateKey;
             }
 
             bssl.c.br_ssl_server_init_full_rsa(
                 &self.httpsState.?.context,
-                &initState.chain.items[0], initState.chain.items.len,
-                initState.privateKey);
+                &self.httpsState.?.chain.items[0], self.httpsState.?.chain.items.len,
+                self.httpsState.?.privateKey);
             bssl.c.br_ssl_engine_set_buffer(
                 &self.httpsState.?.context.eng,
                 &self.httpsState.?.buf[0], self.httpsState.?.buf.len, 1);
@@ -184,6 +148,11 @@ pub const Server = struct {
 
         self.allocator.free(self.buf);
         if (self.httpsState) |state| {
+            for (state.chain.items) |chain| {
+                const bytes = chain.data[0..chain.data_len];
+                self.allocator.free(bytes);
+            }
+            state.chain.deinit();
             self.allocator.free(state.buf);
         }
     }
@@ -240,13 +209,15 @@ pub const Server = struct {
                 }
                 continue;
             };
+            defer std.os.closeSocket(fd);
 
             var engine = if (self.httpsState) |_| &self.httpsState.?.context.eng else null;
-            const stream = net_io.Stream.init(std.net.Stream {.handle = fd}, engine);
-            defer stream.close();
+            var stream: net_io.Stream = undefined;
+            stream.load(std.net.Stream {.handle = fd}, engine);
+            defer stream.deinit();
 
-            self.handleRequest(acceptedAddress, stream) catch |err| {
-                std.log.err("handleRequest error {}", .{err});
+            self.handleRequest(acceptedAddress, &stream) catch |err| {
+                std.log.warn("handleRequest error {}", .{err});
             };
         }
     }
@@ -268,11 +239,11 @@ pub const Server = struct {
         while (self.listenExited.load(.Acquire)) {}
     }
 
-    fn handleRequest(self: *Self, address: std.net.Address, stream: net_io.Stream) !void
+    fn handleRequest(self: *Self, address: std.net.Address, stream: *net_io.Stream) !void
     {
         _ = address;
 
-        const streamReader = stream.reader();
+        var streamReader = stream.reader();
         var request: Request = undefined;
         var parsedHeader = false;
         var header = std.ArrayList(u8).init(self.allocator);
@@ -319,10 +290,9 @@ pub const Server = struct {
             }
         }
 
-        const streamWriter = stream.writer();
+        var streamWriter = stream.writer();
         self.callback(&request, streamWriter) catch |err| {
-            std.log.err("Server request callback error {}", .{err});
-            return error.CallbackError;
+            return err;
         };
     }
 };
@@ -356,4 +326,42 @@ pub fn writeContentType(writer: anytype, contentType: http.ContentType) !void
 pub fn writeEndHeader(writer: anytype) !void
 {
     try writer.writeAll("\r\n");
+}
+
+const HttpsInitState = struct {
+    allocator: std.mem.Allocator,
+    chain: *std.ArrayList(bssl.c.br_x509_certificate),
+    skeyContext: *bssl.c.br_skey_decoder_context,
+    privateKeySet: bool,
+    privateKey: **const bssl.c.br_rsa_private_key,
+};
+
+fn pemCallbackCertChain(state: *HttpsInitState, data: []const u8) !void
+{
+    const copy = try state.allocator.dupe(u8, data);
+    var newChainCert = try state.chain.addOne();
+    newChainCert.data = &copy[0];
+    newChainCert.data_len = copy.len;
+}
+
+fn pemCallbackPrivateKey(state: *HttpsInitState, data: []const u8) !void
+{
+    if (state.privateKeySet) {
+        return error.MultiplePrivateKeys;
+    }
+
+    bssl.c.br_skey_decoder_init(state.skeyContext);
+    bssl.c.br_skey_decoder_push(state.skeyContext, &data[0], data.len);
+    const decoderErr = bssl.c.br_skey_decoder_last_error(state.skeyContext);
+    if (decoderErr != 0) {
+        return error.br_skey_decoder_error;
+    }
+    const keyType = bssl.c.br_skey_decoder_key_type(state.skeyContext);
+    if (keyType != bssl.c.BR_KEYTYPE_RSA) {
+        return error.nonRsaKeyType;
+    }
+    state.privateKey.* = bssl.c.br_skey_decoder_get_rsa(state.skeyContext) orelse {
+        return error.getRsaFailed;
+    };
+    state.privateKeySet = true;
 }
