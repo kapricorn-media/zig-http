@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 const bssl = @import("bearssl");
@@ -5,6 +6,16 @@ const http = @import("http-common");
 
 const certs = @import("certs.zig");
 const net_io = @import("net_io.zig");
+
+const localhost = @import("localhost.zig");
+
+var _rootCaListOverride: ?certs.RootCaList = null;
+
+pub fn overrideRootCaList(certFileData: []const u8, allocator: std.mem.Allocator) !void
+{
+    _rootCaListOverride = certs.RootCaList {.list = undefined};
+    try _rootCaListOverride.?.loadFromCrtFile(certFileData, allocator);
+}
 
 pub const RequestError = error {
     ConnectError,
@@ -58,38 +69,6 @@ pub const Response = struct
     }
 };
 
-const HttpsState = struct {
-    rootCaList: certs.RootCaList,
-    sslContext: bssl.c.br_ssl_client_context,
-    x509Context: bssl.c.br_x509_minimal_context,
-    buf: []u8,
-
-    const Self = @This();
-
-    fn load(self: *Self, hostname: [:0]const u8, allocator: std.mem.Allocator) !void
-    {
-        try self.rootCaList.load(allocator);
-        self.buf = try allocator.alloc(u8, bssl.c.BR_SSL_BUFSIZE_BIDI);
-
-        bssl.c.br_ssl_client_init_full(
-            &self.sslContext, &self.x509Context,
-            &self.rootCaList.list.items[0], self.rootCaList.list.items.len
-        );
-        bssl.c.br_ssl_engine_set_buffer(&self.sslContext.eng, &self.buf[0], self.buf.len, 1);
-
-        const result = bssl.c.br_ssl_client_reset(&self.sslContext, hostname, 0);
-        if (result != 1) {
-            return error.br_ssl_client_reset;
-        }
-    }
-
-    fn deinit(self: *Self, allocator: std.mem.Allocator) void
-    {
-        allocator.free(self.buf);
-        self.rootCaList.deinit(allocator);
-    }
-};
-
 pub fn request(
     method: http.Method,
     https: bool,
@@ -103,7 +82,7 @@ pub fn request(
     outResponse: *Response) RequestError!void
 {
     var tcpStream = std.net.tcpConnectToHost(allocator, hostname, port) catch |err| {
-        std.log.err("tcpConnectToHost error {}", .{err});
+        std.log.err("tcpConnectToHostNonBlocking error {}", .{err});
         return RequestError.ConnectError;
     };
     defer tcpStream.close();
@@ -124,45 +103,41 @@ pub fn request(
     defer if (httpsState) |state| state.deinit(allocator);
 
     var engine = if (httpsState) |_| &httpsState.?.sslContext.eng else null;
-    var stream: net_io.Stream = undefined;
-    stream.load(tcpStream, engine);
-    defer stream.deinit();
+    var stream = net_io.Stream.init(tcpStream, engine);
 
-    var writer = stream.writer();
     const contentLength = if (body) |b| b.len else 0;
     std.fmt.format(
-        writer,
+        stream,
         "{s} {s} HTTP/1.1\r\nHost: {s}:{}\r\nConnection: close\r\nContent-Length: {}\r\n",
         .{http.methodToString(method), uri, hostname, port, contentLength}
     ) catch |err| switch (err) {
-        error.BsslWriteFail => return RequestError.HttpsError,
+        error.BsslError => return RequestError.HttpsError,
         else => return RequestError.WriteError,
     };
 
     if (headers) |hs| {
         for (hs) |h| {
-            std.fmt.format(writer, "{s}: {s}\r\n", .{h.name, h.value}) catch |err| switch (err) {
-                error.BsslWriteFail => return RequestError.HttpsError,
+            std.fmt.format(stream, "{s}: {s}\r\n", .{h.name, h.value}) catch |err| switch (err) {
+                error.BsslError => return RequestError.HttpsError,
                 else => return RequestError.WriteError,
             };
         }
     }
 
-    writer.writeAll("\r\n") catch |err| switch (err) {
-        error.BsslWriteFail => return RequestError.HttpsError,
+    stream.writeAll("\r\n") catch |err| switch (err) {
+        error.BsslError => return RequestError.HttpsError,
         else => return RequestError.WriteError,
     };
 
     if (body) |b| {
-        writer.writeAll(b) catch |err| switch (err) {
-            error.BsslWriteFail => return RequestError.HttpsError,
+        stream.writeAll(b) catch |err| switch (err) {
+            error.BsslError => return RequestError.HttpsError,
             else => return RequestError.WriteError,
         };
     }
 
     stream.flush() catch return RequestError.WriteError;
 
-    var reader = stream.reader();
     const initialCapacity = 4096;
     outData.* = std.ArrayList(u8).initCapacity(allocator, initialCapacity) catch |err| {
         std.log.err("ArrayList initCapacity error {}", .{err});
@@ -171,13 +146,10 @@ pub fn request(
     errdefer outData.deinit();
     var buf: [4096]u8 = undefined;
     while (true) {
-        const readBytes = reader.read(&buf) catch |err| switch (err) {
-            error.BsslReadFail => return RequestError.HttpsError,
+        const readBytes = stream.read(&buf) catch |err| switch (err) {
+            error.BsslError => return RequestError.HttpsError,
             else => return RequestError.ReadError,
         };
-        if (readBytes < 0) {
-            return error.readResponse;
-        }
         if (readBytes == 0) {
             break;
         }
@@ -262,3 +234,46 @@ pub fn httpsPost(
 {
     try post(true, 443, hostname, uri, headers, body, allocator, outData, outResponse);
 }
+
+const HttpsState = struct {
+    rootCaList: ?certs.RootCaList,
+    sslContext: bssl.c.br_ssl_client_context,
+    x509Context: bssl.c.br_x509_minimal_context,
+    buf: []u8,
+
+    const Self = @This();
+
+    fn load(self: *Self, hostname: [:0]const u8, allocator: std.mem.Allocator) !void
+    {
+        var list: *const certs.RootCaList = undefined;
+        if (_rootCaListOverride) |_| {
+            self.rootCaList = null;
+            list = &_rootCaListOverride.?;
+        } else {
+            self.rootCaList = certs.RootCaList {.list = undefined};
+            try self.rootCaList.?.load(allocator);
+            list = &self.rootCaList.?;
+        }
+        self.buf = try allocator.alloc(u8, bssl.c.BR_SSL_BUFSIZE_BIDI);
+
+        bssl.c.br_ssl_client_init_full(
+            &self.sslContext, &self.x509Context,
+            &localhost.TAs[0], localhost.TAs.len
+            // &list.list.items[0], list.list.items.len
+        );
+        bssl.c.br_ssl_engine_set_buffer(&self.sslContext.eng, &self.buf[0], self.buf.len, 1);
+
+        const result = bssl.c.br_ssl_client_reset(&self.sslContext, hostname, 0);
+        if (result != 1) {
+            return error.br_ssl_client_reset;
+        }
+    }
+
+    fn deinit(self: *Self, allocator: std.mem.Allocator) void
+    {
+        allocator.free(self.buf);
+        if (self.rootCaList) |localList| {
+            localList.deinit(allocator);
+        }
+    }
+};

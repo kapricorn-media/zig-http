@@ -8,6 +8,66 @@ pub const RootCaList = struct {
 
     const Self = @This();
 
+    pub fn loadFromCrtFile(self: *Self, fileData: []const u8, allocator: std.mem.Allocator) !void
+    {
+        var remaining = fileData;
+        var pemDecoder: bssl.c.br_pem_decoder_context = undefined;
+        bssl.c.br_pem_decoder_init(&pemDecoder);
+        var pemState = PemState {
+            .success = false,
+            .x509Decoder = undefined,
+            .list = std.ArrayList(u8).init(allocator),
+        };
+        defer pemState.list.deinit();
+        while (remaining.len > 0) {
+            const result = bssl.c.br_pem_decoder_push(&pemDecoder, &remaining[0], remaining.len);
+            if (result == 0) {
+                while (true) {
+                    const event = bssl.c.br_pem_decoder_event(&pemDecoder);
+                    switch (event) {
+                        0 => break,
+                        bssl.c.BR_PEM_BEGIN_OBJ => {
+                            pemState.success = true;
+                            bssl.c.br_x509_decoder_init(&pemState.x509Decoder, x509Callback, &pemState);
+                            pemState.list.clearRetainingCapacity();
+                            bssl.c.br_pem_decoder_setdest(&pemDecoder, pemCallback, &pemState);
+                        },
+                        bssl.c.BR_PEM_END_OBJ => {
+                            if (!pemState.success) {
+                                return error.pemStateError;
+                            }
+
+                            // TODO dupe code
+                            const rc = bssl.c.br_x509_decoder_last_error(&pemState.x509Decoder);
+                            if (rc != 0) {
+                                return error.x509DecoderError;
+                            }
+
+                            var ta = try self.list.addOne();
+
+                            const dnBytesCopy = try allocator.dupe(u8, pemState.list.items);
+                            ta.dn.data = &dnBytesCopy[0];
+                            ta.dn.len = dnBytesCopy.len;
+
+                            const pkey = bssl.c.br_x509_decoder_get_pkey(&pemState.x509Decoder);
+                            if (pkey == null) {
+                                return error.br_x509_decoder_get_pkey;
+                            }
+                            try copyBrPublicKey(&ta.pkey, pkey, allocator);
+                            const isCA = bssl.c.br_x509_decoder_isCA(&pemState.x509Decoder);
+                            ta.flags = @intCast(c_uint, isCA);
+                        },
+                        bssl.c.BR_PEM_ERROR => return error.pemDecoderError,
+                        else => return error.badPemDecoderEvent,
+                    }
+                }
+                continue;
+            }
+
+            remaining = remaining[result..];
+        }
+    }
+
     pub fn load(self: *Self, allocator: std.mem.Allocator) !void
     {
         self.list = std.ArrayList(bssl.c.br_x509_trust_anchor).init(allocator);
@@ -21,62 +81,7 @@ pub const RootCaList = struct {
                 const fileData = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
                 defer allocator.free(fileData);
 
-                var remaining = fileData;
-                var pemDecoder: bssl.c.br_pem_decoder_context = undefined;
-                bssl.c.br_pem_decoder_init(&pemDecoder);
-                var pemState = PemState {
-                    .success = false,
-                    .x509Decoder = undefined,
-                    .list = std.ArrayList(u8).init(allocator),
-                };
-                defer pemState.list.deinit();
-                while (remaining.len > 0) {
-                    const result = bssl.c.br_pem_decoder_push(&pemDecoder, &remaining[0], remaining.len);
-                    if (result == 0) {
-                        while (true) {
-                            const event = bssl.c.br_pem_decoder_event(&pemDecoder);
-                            switch (event) {
-                                0 => break,
-                                bssl.c.BR_PEM_BEGIN_OBJ => {
-                                    pemState.success = true;
-                                    bssl.c.br_x509_decoder_init(&pemState.x509Decoder, x509Callback, &pemState);
-                                    pemState.list.clearRetainingCapacity();
-                                    bssl.c.br_pem_decoder_setdest(&pemDecoder, pemCallback, &pemState);
-                                },
-                                bssl.c.BR_PEM_END_OBJ => {
-                                    if (!pemState.success) {
-                                        return error.pemStateError;
-                                    }
-
-                                    // TODO dupe code
-                                    const rc = bssl.c.br_x509_decoder_last_error(&pemState.x509Decoder);
-                                    if (rc != 0) {
-                                        return error.x509DecoderError;
-                                    }
-
-                                    var ta = try self.list.addOne();
-
-                                    const dnBytesCopy = try allocator.dupe(u8, pemState.list.items);
-                                    ta.dn.data = &dnBytesCopy[0];
-                                    ta.dn.len = dnBytesCopy.len;
-
-                                    const pkey = bssl.c.br_x509_decoder_get_pkey(&pemState.x509Decoder);
-                                    if (pkey == null) {
-                                        return error.br_x509_decoder_get_pkey;
-                                    }
-                                    try copyBrPublicKey(&ta.pkey, pkey, allocator);
-                                    const isCA = bssl.c.br_x509_decoder_isCA(&pemState.x509Decoder);
-                                    ta.flags = @intCast(c_uint, isCA);
-                                },
-                                bssl.c.BR_PEM_ERROR => return error.pemDecoderError,
-                                else => return error.badPemDecoderEvent,
-                            }
-                        }
-                        continue;
-                    }
-
-                    remaining = remaining[result..];
-                }
+                try self.loadFromCrtFile(fileData, allocator);
             },
             .macos => {
                 const macos_certs = @cImport(@cInclude("macos_certs.h"));

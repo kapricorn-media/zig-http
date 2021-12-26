@@ -8,6 +8,24 @@ pub fn build(b: *std.build.Builder) void
     const mode = b.standardReleaseOptions();
     const target = b.standardTargetOptions(.{});
 
+    const sampleClient = b.addExecutable("sample_client", "test/sample_client.zig");
+    sampleClient.setBuildMode(mode);
+    sampleClient.setTarget(target);
+    addLibCommon(sampleClient, target, ".");
+    addLibClient(sampleClient, target, ".");
+    zig_bearssl_build.addLib(sampleClient, target, "deps/zig-bearssl");
+    sampleClient.linkLibC();
+    sampleClient.install();
+
+    const sampleServer = b.addExecutable("sample_server", "test/sample_server.zig");
+    sampleServer.setBuildMode(mode);
+    sampleServer.setTarget(target);
+    addLibCommon(sampleServer, target, ".");
+    addLibServer(sampleServer, target, ".");
+    zig_bearssl_build.addLib(sampleServer, target, "deps/zig-bearssl");
+    sampleServer.linkLibC();
+    sampleServer.install();
+
     const testClient = b.addTest("test/test_client.zig");
     testClient.setBuildMode(mode);
     testClient.setTarget(target);
@@ -34,7 +52,7 @@ pub fn build(b: *std.build.Builder) void
     testBoth.linkLibC();
 
     const runTests = b.step("test", "Run library tests");
-    runTests.dependOn(&testClient.step);
+    // runTests.dependOn(&testClient.step);
     // runTests.dependOn(&testServer.step);
     runTests.dependOn(&testBoth.step);
 }

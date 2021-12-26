@@ -5,13 +5,17 @@ const http = @import("http-common");
 
 const net_io = @import("net_io.zig");
 
-pub const Reader = net_io.Stream.Reader;
-pub const Writer = net_io.Stream.Writer;
+const localhost = @import("localhost.zig");
+
+pub const Stream = net_io.Stream;
+
+// pub const Reader = net_io.Stream.Reader;
+// pub const Writer = net_io.Stream.Writer;
 
 /// Server request callback type.
 /// Don't return errors for normal application-specific stuff you can handle thru HTTP codes.
 /// Errors should be used only for write failures, tests, or other very special situations. 
-pub const CallbackType = fn(request: *const Request, writer: Writer) anyerror!void;
+pub const CallbackType = fn(request: *const Request, stream: net_io.Stream) anyerror!void;
 
 pub const Request = struct {
     method: http.Method,
@@ -22,6 +26,17 @@ pub const Request = struct {
     body: []const u8,
 
     const Self = @This();
+
+    /// For string formatting, easy printing/debugging.
+    pub fn format(self: Self, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void
+    {
+        _ = fmt; _ = options;
+        try std.fmt.format(
+            writer,
+            "[method={} uri={s} version={} numHeaders={} body.len={}]",
+            .{self.method, self.uri, self.version, self.numHeaders, self.body.len}
+        );
+    }
 
     fn loadHeaderData(self: *Self, header: []const u8) !void
     {
@@ -53,7 +68,6 @@ const HttpsState = struct {
     chain: std.ArrayList(bssl.c.br_x509_certificate),
     skeyContext: bssl.c.br_skey_decoder_context,
     privateKey: *const bssl.c.br_rsa_private_key,
-    context: bssl.c.br_ssl_server_context,
     buf: []u8,
 };
 
@@ -91,7 +105,6 @@ pub const Server = struct {
                 .chain = std.ArrayList(bssl.c.br_x509_certificate).init(allocator),
                 .skeyContext = undefined,
                 .privateKey = undefined,
-                .context = undefined,
                 .buf = try allocator.alloc(u8, bssl.c.BR_SSL_BUFSIZE_BIDI),
             };
 
@@ -105,9 +118,7 @@ pub const Server = struct {
 
             try bssl.decodePem(
                 options.certChainFileData,
-                *HttpsInitState,
-                &initState,
-                pemCallbackCertChain,
+                *HttpsInitState, &initState, pemCallbackCertChain,
                 allocator
             );
             if (initState.chain.items.len == 0) {
@@ -116,24 +127,11 @@ pub const Server = struct {
 
             try bssl.decodePem(
                 options.privateKeyFileData,
-                *HttpsInitState,
-                &initState,
-                pemCallbackPrivateKey,
+                *HttpsInitState, &initState, pemCallbackPrivateKey,
                 allocator
             );
             if (!initState.privateKeySet) {
                 return error.NoPrivateKey;
-            }
-
-            bssl.c.br_ssl_server_init_full_rsa(
-                &self.httpsState.?.context,
-                &self.httpsState.?.chain.items[0], self.httpsState.?.chain.items.len,
-                self.httpsState.?.privateKey);
-            bssl.c.br_ssl_engine_set_buffer(
-                &self.httpsState.?.context.eng,
-                &self.httpsState.?.buf[0], self.httpsState.?.buf.len, 1);
-            if (bssl.c.br_ssl_server_reset(&self.httpsState.?.context) != 1) {
-                return error.br_ssl_server_reset;
             }
         }
 
@@ -211,12 +209,35 @@ pub const Server = struct {
             };
             defer std.os.closeSocket(fd);
 
-            var engine = if (self.httpsState) |_| &self.httpsState.?.context.eng else null;
-            var stream: net_io.Stream = undefined;
-            stream.load(std.net.Stream {.handle = fd}, engine);
-            defer stream.deinit();
+            var context: bssl.c.br_ssl_server_context = undefined;
+            var engine: ?*bssl.c.br_ssl_engine_context = null;
+            if (self.httpsState) |_| {
+                // bssl.c.br_ssl_server_init_full_rsa(
+                //     &context,
+                //     &self.httpsState.?.chain.items[0], self.httpsState.?.chain.items.len,
+                //     self.httpsState.?.privateKey);
+                bssl.c.br_ssl_server_init_full_rsa(
+                    &context,
+                    &self.httpsState.?.chain.items[0], self.httpsState.?.chain.items.len,
+                    &localhost.RSA);
+                // bssl.c.br_ssl_server_init_full_rsa(
+                //     &context,
+                //     &localhost.CHAIN[0], localhost.CHAIN.len,
+                //     &localhost.RSA);
+                bssl.c.br_ssl_engine_set_buffer(
+                    &context.eng,
+                    &self.httpsState.?.buf[0], self.httpsState.?.buf.len, 1);
+                if (bssl.c.br_ssl_server_reset(&context) != 1) {
+                    return error.br_ssl_server_reset;
+                }
 
-            self.handleRequest(acceptedAddress, &stream) catch |err| {
+                engine = &context.eng;
+            }
+
+            var stream = net_io.Stream.init(std.net.Stream {.handle = fd}, engine);
+            defer stream.closeHttpsIfOpen() catch {};
+
+            self.handleRequest(acceptedAddress, stream) catch |err| {
                 std.log.warn("handleRequest error {}", .{err});
             };
         }
@@ -239,11 +260,12 @@ pub const Server = struct {
         while (self.listenExited.load(.Acquire)) {}
     }
 
-    fn handleRequest(self: *Self, address: std.net.Address, stream: *net_io.Stream) !void
+    fn handleRequest(self: *Self, address: std.net.Address, stream: net_io.Stream) !void
     {
         _ = address;
 
-        var streamReader = stream.reader();
+        std.log.warn("handleRequest", .{});
+        defer std.log.warn("handleRequest done", .{});
         var request: Request = undefined;
         var parsedHeader = false;
         var header = std.ArrayList(u8).init(self.allocator);
@@ -252,7 +274,8 @@ pub const Server = struct {
         defer body.deinit();
         var contentLength: usize = 0;
         while (true) {
-            const n = streamReader.read(self.buf) catch |err| switch (err) {
+            // std.log.warn("before read", .{});
+            const n = stream.read(self.buf) catch |err| switch (err) {
                 std.os.ReadError.WouldBlock => {
                     continue;
                 },
@@ -260,6 +283,7 @@ pub const Server = struct {
                     return err;
                 },
             };
+            std.log.warn("n {}", .{n});
             if (n == 0) {
                 break;
             }
@@ -290,42 +314,50 @@ pub const Server = struct {
             }
         }
 
-        var streamWriter = stream.writer();
-        self.callback(&request, streamWriter) catch |err| {
+        if (!parsedHeader) {
+            return error.NoParsedHeader;
+        }
+        if (body.items.len != contentLength) {
+            return error.ContentLengthMismatch;
+        }
+
+        self.callback(&request, stream) catch |err| {
             return err;
         };
+
+        try stream.flush();
     }
 };
 
-pub fn writeCode(writer: anytype, code: http.Code) !void
+pub fn writeCode(stream: net_io.Stream, code: http.Code) !void
 {
     const versionString = http.versionToString(http.Version.v1_1);
     try std.fmt.format(
-        writer,
+        stream,
         "{s} {} {s}\r\n",
         .{versionString, @enumToInt(code), http.getCodeMessage(code)}
     );
 }
 
-pub fn writeHeader(writer: anytype, header: http.Header) !void
+pub fn writeHeader(stream: net_io.Stream, header: http.Header) !void
 {
-    try std.fmt.format(writer, "{s}: {s}\r\n", .{header.name, header.value});
+    try std.fmt.format(stream, "{s}: {s}\r\n", .{header.name, header.value});
 }
 
-pub fn writeContentLength(writer: anytype, contentLength: usize) !void
+pub fn writeContentLength(stream: net_io.Stream, contentLength: usize) !void
 {
-    try std.fmt.format(writer, "Content-Length: {}\r\n", .{contentLength});
+    try std.fmt.format(stream, "Content-Length: {}\r\n", .{contentLength});
 }
 
-pub fn writeContentType(writer: anytype, contentType: http.ContentType) !void
+pub fn writeContentType(stream: net_io.Stream, contentType: http.ContentType) !void
 {
     const string = http.contentTypeToString(contentType);
-    try writeHeader(writer, .{.name = "Content-Type", .value = string});
+    try writeHeader(stream, .{.name = "Content-Type", .value = string});
 }
 
-pub fn writeEndHeader(writer: anytype) !void
+pub fn writeEndHeader(stream: net_io.Stream) !void
 {
-    try writer.writeAll("\r\n");
+    try stream.writeAll("\r\n");
 }
 
 const HttpsInitState = struct {
