@@ -257,11 +257,15 @@ pub fn Server(comptime UserDataType: type) type
                     if (std.mem.indexOf(u8, header.items, "\r\n\r\n")) |ind| {
                         const headerLength = ind + 4;
                         try request.loadHeaderData(header.items[0..headerLength]);
-                        if (http.getContentLength(request)) |l| {
-                            contentLength = l;
-                        } else {
-                            std.log.warn("Content-Length missing or invalid, assuming 0", .{});
-                        }
+                        contentLength = http.getContentLength(request) catch |err| blk: {
+                            switch (err) {
+                                error.NoContentLength => {},
+                                error.InvalidContentLength => {
+                                    std.log.warn("Content-Length invalid, assuming 0", .{});
+                                },
+                            }
+                            break :blk 0;
+                        };
 
                         if (header.items.len > headerLength) {
                             try body.appendSlice(header.items[headerLength..]);
@@ -324,25 +328,132 @@ pub fn writeEndHeader(stream: net_io.Stream) !void
     try stream.writeAll("\r\n");
 }
 
+// TODO move to common.zig ?
+pub fn getFileContentType(path: []const u8) ?http.ContentType
+{
+    const Mapping = struct {
+        extension: []const u8,
+        contentType: http.ContentType,
+    };
+
+    const mappings = [_]Mapping {
+        // Pulled from civetweb.c. Thanks!
+        // IANA registered MIME types (http://www.iana.org/assignments/media-types)
+        // application types
+        .{.extension = ".doc", .contentType = .ApplicationMsword},
+        .{.extension = ".eps", .contentType = .ApplicationPostscript},
+        .{.extension = ".exe", .contentType = .ApplicationOctetStream},
+        .{.extension = ".js", .contentType = .ApplicationJavascript},
+        .{.extension = ".json", .contentType = .ApplicationJson},
+        .{.extension = ".pdf", .contentType = .ApplicationPdf},
+        .{.extension = ".ps", .contentType = .ApplicationPostscript},
+        .{.extension = ".rtf", .contentType = .ApplicationRtf},
+        .{.extension = ".xhtml", .contentType = .ApplicationXhtmlXml},
+        .{.extension = ".xsl", .contentType = .ApplicationXml},
+        .{.extension = ".xslt", .contentType = .ApplicationXml},
+        // fonts
+        .{.extension = ".ttf", .contentType = .ApplicationFontSfnt},
+        .{.extension = ".cff", .contentType = .ApplicationFontSfnt},
+        .{.extension = ".otf", .contentType = .ApplicationFontSfnt},
+        .{.extension = ".aat", .contentType = .ApplicationFontSfnt},
+        .{.extension = ".sil", .contentType = .ApplicationFontSfnt},
+        .{.extension = ".pfr", .contentType = .ApplicationFontTdpfr},
+        .{.extension = ".woff", .contentType = .ApplicationFontWoff},
+        // audio
+        .{.extension = ".mp3", .contentType = .AudioMpeg},
+        .{.extension = ".oga", .contentType = .AudioOgg},
+        .{.extension = ".ogg", .contentType = .AudioOgg},
+        // image
+        .{.extension = ".gif", .contentType = .ImageGif},
+        .{.extension = ".ief", .contentType = .ImageIef},
+        .{.extension = ".jpeg", .contentType = .ImageJpeg},
+        .{.extension = ".jpg", .contentType = .ImageJpeg},
+        .{.extension = ".jpm", .contentType = .ImageJpm},
+        .{.extension = ".jpx", .contentType = .ImageJpx},
+        .{.extension = ".png", .contentType = .ImagePng},
+        .{.extension = ".svg", .contentType = .ImageSvgXml},
+        .{.extension = ".tif", .contentType = .ImageTiff},
+        .{.extension = ".tiff", .contentType = .ImageTiff},
+        // model
+        .{.extension = ".wrl", .contentType = .ModelVrml},
+        // text
+        .{.extension = ".css", .contentType = .TextCss},
+        .{.extension = ".csv", .contentType = .TextCsv},
+        .{.extension = ".htm", .contentType = .TextHtml},
+        .{.extension = ".html", .contentType = .TextHtml},
+        .{.extension = ".sgm", .contentType = .TextSgml},
+        .{.extension = ".shtm", .contentType = .TextHtml},
+        .{.extension = ".shtml", .contentType = .TextHtml},
+        .{.extension = ".txt", .contentType = .TextPlain},
+        .{.extension = ".xml", .contentType = .TextXml},
+        // video
+        .{.extension = ".mov", .contentType = .VideoQuicktime},
+        .{.extension = ".mp4", .contentType = .VideoMp4},
+        .{.extension = ".mpeg", .contentType = .VideoMpeg},
+        .{.extension = ".mpg", .contentType = .VideoMpeg},
+        .{.extension = ".ogv", .contentType = .VideoOgg},
+        .{.extension = ".qt", .contentType = .VideoQuicktime},
+        // not registered types
+        // (http://reference.sitepoint.com/html/mime-types-full,
+        //  http://www.hansenb.pdx.edu/DMKB/dict/tutorials/mime_typ.php, ...)
+        .{.extension = ".arj", .contentType = .ApplicationXArjCompressed},
+        .{.extension = ".gz", .contentType = .ApplicationXGunzip},
+        .{.extension = ".rar", .contentType = .ApplicationXArjCompressed},
+        .{.extension = ".swf", .contentType = .ApplicationXShockwaveFlash},
+        .{.extension = ".tar", .contentType = .ApplicationXTar},
+        .{.extension = ".tgz", .contentType = .ApplicationXTarGz},
+        .{.extension = ".torrent", .contentType = .ApplicationXBittorrent},
+        .{.extension = ".ppt", .contentType = .ApplicationXMspowerpoint},
+        .{.extension = ".xls", .contentType = .ApplicationXMsexcel},
+        .{.extension = ".zip", .contentType = .ApplicationXZipCompressed},
+        .{.extension = ".aac", .contentType = .AudioAac}, // http://en.wikipedia.org/wiki/Advanced_Audio_Coding
+        .{.extension = ".aif", .contentType = .AudioXAif},
+        .{.extension = ".m3u", .contentType = .AudioXMpegurl},
+        .{.extension = ".mid", .contentType = .AudioXMidi},
+        .{.extension = ".ra", .contentType = .AudioXPnRealaudio},
+        .{.extension = ".ram", .contentType = .AudioXPnRealaudio},
+        .{.extension = ".wav", .contentType = .AudioXWav},
+        .{.extension = ".bmp", .contentType = .ImageBmp},
+        .{.extension = ".ico", .contentType = .ImageXIcon},
+        .{.extension = ".pct", .contentType = .ImageXPct},
+        .{.extension = ".pict", .contentType = .ImagePict},
+        .{.extension = ".rgb", .contentType = .ImageXRgb},
+        .{.extension = ".webm", .contentType = .VideoWebm}, // http://en.wikipedia.org/wiki/WebM
+        .{.extension = ".asf", .contentType = .VideoXMsAsf},
+        .{.extension = ".avi", .contentType = .VideoXMsvideo},
+        .{.extension = ".m4v", .contentType = .VideoXM4v},
+    };
+
+    const extension = std.fs.path.extension(path);
+    for (mappings) |m| {
+        if (std.mem.eql(u8, extension, m.extension)) {
+            return m.contentType;
+        }
+    }
+    return null;
+}
+
 pub fn writeFileResponse(
     stream: net_io.Stream,
     relativePath: []const u8,
     allocator: std.mem.Allocator) !void
 {
     const cwd = std.fs.cwd();
-    const file = cwd.openFile(relativePath, .{});
+    const file = try cwd.openFile(relativePath, .{});
     defer file.close();
     const fileData = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
     defer allocator.free(fileData);
 
     try writeCode(stream, ._200);
     try writeContentLength(stream, fileData.len);
-    // try writeContentType(stream, .TODO);
+    if (getFileContentType(relativePath)) |contentType| {
+        try writeContentType(stream, contentType);
+    }
     try writeEndHeader(stream);
     try stream.writeAll(fileData);
 }
 
-fn uriHasNoFileExtension(uri: []const u8) bool
+fn uriHasFileExtension(uri: []const u8) bool
 {
     var dotAfterSlash = false;
     for (uri) |c| {
@@ -384,7 +495,7 @@ pub fn serveStatic(
     const suffix = blk: {
         if (uri[uri.len - 1] == '/') {
             break :blk "index.html";
-        } else if (uriHasNoFileExtension(uri)) {
+        } else if (!uriHasFileExtension(uri)) {
             break :blk "/index.html";
         } else {
             break :blk "";
@@ -397,5 +508,5 @@ pub fn serveStatic(
         .{uri[1..], suffix}
     );
     defer allocator.free(path);
-    try writeFileResponse(stream, path);
+    try writeFileResponse(stream, path, allocator);
 }

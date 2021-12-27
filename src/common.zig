@@ -33,21 +33,126 @@ pub fn getCodeMessage(code: Code) []const u8
     };
 }
 
-pub const ContentType = enum
-{
-    TextPlain,
-    TextHtml,
+pub const ContentType = enum {
+    ApplicationFontSfnt,
+    ApplicationFontTdpfr,
+    ApplicationFontWoff,
+    ApplicationJavascript,
     ApplicationJson,
+    ApplicationMsword,
     ApplicationOctetStream,
+    ApplicationPdf,
+    ApplicationPostscript,
+    ApplicationRtf,
+    ApplicationXArjCompressed,
+    ApplicationXBittorrent,
+    ApplicationXGunzip,
+    ApplicationXhtmlXml,
+    ApplicationXml,
+    ApplicationXMsexcel,
+    ApplicationXMspowerpoint,
+    ApplicationXShockwaveFlash,
+    ApplicationXTar,
+    ApplicationXTarGz,
+    ApplicationXZipCompressed,
+    AudioAac,
+    AudioMpeg,
+    AudioOgg,
+    AudioXAif,
+    AudioXMidi,
+    AudioXMpegurl,
+    AudioXPnRealaudio,
+    AudioXWav,
+    ImageBmp,
+    ImageGif,
+    ImageIef,
+    ImageJpeg,
+    ImageJpm,
+    ImageJpx,
+    ImagePict,
+    ImagePng,
+    ImageSvgXml,
+    ImageTiff,
+    ImageXIcon,
+    ImageXPct,
+    ImageXRgb,
+    ModelVrml,
+    TextCss,
+    TextCsv,
+    TextHtml,
+    TextPlain,
+    TextSgml,
+    TextXml,
+    VideoMp4,
+    VideoMpeg,
+    VideoOgg,
+    VideoQuicktime,
+    VideoWebm,
+    VideoXM4v,
+    VideoXMsAsf,
+    VideoXMsvideo,
 };
 
 pub fn contentTypeToString(contentType: ContentType) []const u8
 {
     return switch (contentType) {
-        .TextPlain => "text/plain",
-        .TextHtml => "text/html",
+        .ApplicationFontSfnt => "application/font-sfnt",
+        .ApplicationFontTdpfr => "application/font-tdpfr",
+        .ApplicationFontWoff => "application/font-woff",
+        .ApplicationJavascript => "application/javascript",
         .ApplicationJson => "application/json",
+        .ApplicationMsword => "application/msword",
         .ApplicationOctetStream => "application/octet-stream",
+        .ApplicationPdf => "application/pdf",
+        .ApplicationPostscript => "application/postscript",
+        .ApplicationRtf => "application/rtf",
+        .ApplicationXArjCompressed => "application/x-arj-compressed",
+        .ApplicationXBittorrent => "application/x-bittorrent",
+        .ApplicationXGunzip => "application/x-gunzip",
+        .ApplicationXhtmlXml => "application/xhtml+xml",
+        .ApplicationXml => "application/xml",
+        .ApplicationXMsexcel => "application/x-msexcel",
+        .ApplicationXMspowerpoint => "application/x-mspowerpoint",
+        .ApplicationXShockwaveFlash => "application/x-shockwave-flash",
+        .ApplicationXTar => "application/x-tar",
+        .ApplicationXTarGz => "application/x-tar-gz",
+        .ApplicationXZipCompressed => "application/x-zip-compressed",
+        .AudioAac => "audio/aac",
+        .AudioMpeg => "audio/mpeg",
+        .AudioOgg => "audio/ogg",
+        .AudioXAif => "audio/x-aif",
+        .AudioXMidi => "audio/x-midi",
+        .AudioXMpegurl => "audio/x-mpegurl",
+        .AudioXPnRealaudio => "audio/x-pn-realaudio",
+        .AudioXWav => "audio/x-wav",
+        .ImageBmp => "image/bmp",
+        .ImageGif => "image/gif",
+        .ImageIef => "image/ief",
+        .ImageJpeg => "image/jpeg",
+        .ImageJpm => "image/jpm",
+        .ImageJpx => "image/jpx",
+        .ImagePict => "image/pict",
+        .ImagePng => "image/png",
+        .ImageSvgXml => "image/svg+xml",
+        .ImageTiff => "image/tiff",
+        .ImageXIcon => "image/x-icon",
+        .ImageXPct => "image/x-pct",
+        .ImageXRgb => "image/x-rgb",
+        .ModelVrml => "model/vrml",
+        .TextCss => "text/css",
+        .TextCsv => "text/csv",
+        .TextHtml => "text/html",
+        .TextPlain => "text/plain",
+        .TextSgml => "text/sgml",
+        .TextXml => "text/xml",
+        .VideoMp4 => "video/mp4",
+        .VideoMpeg => "video/mpeg",
+        .VideoOgg => "video/ogg",
+        .VideoQuicktime => "video/quicktime",
+        .VideoWebm => "video/webm",
+        .VideoXM4v => "video/x-m4v",
+        .VideoXMsAsf => "video/x-ms-asf",
+        .VideoXMsvideo => "video/x-msvideo",
     };
 }
 
@@ -120,10 +225,15 @@ pub fn getHeader(reqOrRes: anytype, header: []const u8) ?[]const u8
     return null;
 }
 
-pub fn getContentLength(reqOrRes: anytype) ?usize
+const ContentLengthError = error {
+    NoContentLength,
+    InvalidContentLength,
+};
+
+pub fn getContentLength(reqOrRes: anytype) ContentLengthError!usize
 {
-    const string = getHeader(reqOrRes, "Content-Length") orelse return null;
-    return std.fmt.parseUnsigned(usize, string, 10) catch null;
+    const string = getHeader(reqOrRes, "Content-Length") orelse return error.NoContentLength;
+    return std.fmt.parseUnsigned(usize, string, 10) catch return error.InvalidContentLength;
 }
 
 pub fn readHeaders(reqOrRes: anytype, headerIt: *std.mem.SplitIterator(u8)) !void

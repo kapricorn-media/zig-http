@@ -37,23 +37,25 @@ pub fn main() !void
         }
     };
 
+    const State = struct {
+        allocator: std.mem.Allocator,
+    };
     const Wrapper = struct {
-        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
+        fn callback(state: *const State, request: *const server.Request, stream: server.Stream) !void
         {
             std.log.info("{}", .{request});
-
-            try server.writeCode(stream, http.Code._200);
-            try server.writeEndHeader(stream);
+            try server.serveStatic(stream, request.uri, ".", state.allocator);
         }
     };
 
-    const httpsOptions = if (https)
-        server.HttpsOptions {
-            .certChainFileData = TEST_LOCALHOST_CRT,
-            .privateKeyFileData = TEST_LOCALHOST_KEY,
-        }
-        else null;
-    var s = try server.Server(void).init(Wrapper.callback, {}, httpsOptions, allocator);
+    const state = State {
+        .allocator = allocator,
+    };
+    const httpsOptions = if (https) server.HttpsOptions {
+        .certChainFileData = TEST_LOCALHOST_CRT,
+        .privateKeyFileData = TEST_LOCALHOST_KEY,
+    } else null;
+    var s = try server.Server(*const State).init(Wrapper.callback, &state, httpsOptions, allocator);
     defer s.deinit();
 
     std.log.info("Listening on {s}:{} HTTPS {}", .{TEST_IP, port, https});
