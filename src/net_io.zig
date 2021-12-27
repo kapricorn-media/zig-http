@@ -98,7 +98,7 @@ pub const Stream = struct {
                 bssl.c.BR_SSL_CLOSED => {
                     const err = bssl.c.br_ssl_engine_last_error(self.engine);
                     if (err != bssl.c.BR_ERR_OK) {
-                        std.log.err("closed with error {}", .{err});
+                        std.log.warn("closed with error {}", .{err});
                         return error.BsslError;
                     }
                     break;

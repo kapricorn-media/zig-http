@@ -24,6 +24,7 @@ pub fn freeOverrideRootCaList(allocator: std.mem.Allocator) void
 pub const RequestError = error {
     ConnectError,
     AllocError,
+    HttpsInitError,
     HttpsError,
     WriteError,
     ReadError,
@@ -85,7 +86,8 @@ pub fn request(
     outData: *std.ArrayList(u8),
     outResponse: *Response) RequestError!void
 {
-    var tcpStream = std.net.tcpConnectToHost(allocator, hostname, port) catch {
+    var tcpStream = std.net.tcpConnectToHost(allocator, hostname, port) catch |err| {
+        std.log.err("tcpConnectToHost failed {}", .{err});
         return RequestError.ConnectError;
     };
     defer tcpStream.close();
@@ -100,8 +102,9 @@ pub fn request(
         }
     };
     defer if (httpsState) |state| allocator.destroy(state);
-    if (httpsState) |state| state.load(hostname, allocator) catch {
-        return RequestError.HttpsError;
+    if (httpsState) |state| state.load(hostname, allocator) catch |err| {
+        std.log.err("HttpsState load failed {}", .{err});
+        return RequestError.HttpsInitError;
     };
     defer if (httpsState) |state| state.deinit(allocator);
 
@@ -240,6 +243,7 @@ pub fn httpsPost(
 
 const HttpsState = struct {
     anchors: ?bssl.crt.Anchors,
+    rawAnchors: []const bssl.c.br_x509_trust_anchor,
     sslContext: bssl.c.br_ssl_client_context,
     x509Context: bssl.c.br_x509_minimal_context,
     buf: []u8,
@@ -253,18 +257,20 @@ const HttpsState = struct {
             self.anchors = null;
             anchors = &_anchorsOverride.?;
         } else {
-            return error.TODOLoadOSAnchors;
-            // self.anchors = bssl.crt.Anchors.init();
-            // list = &self.anchors.?;
+            self.anchors = try loadAnchorsFromOs(allocator);
+            anchors = &self.anchors.?;
         }
+        errdefer if (self.anchors) |a| a.deinit(allocator);
+        self.rawAnchors = try anchors.getRawAnchors(allocator);
+        errdefer allocator.free(self.rawAnchors);
         self.buf = try allocator.alloc(u8, bssl.c.BR_SSL_BUFSIZE_BIDI);
+        errdefer allocator.free(self.buf);
 
         bssl.c.br_ssl_client_init_full(
             &self.sslContext, &self.x509Context,
-            &anchors.anchors[0], anchors.anchors.len
+            &self.rawAnchors[0], self.rawAnchors.len
         );
         bssl.c.br_ssl_engine_set_buffer(&self.sslContext.eng, &self.buf[0], self.buf.len, 1);
-
         const result = bssl.c.br_ssl_client_reset(&self.sslContext, hostname, 0);
         if (result != 1) {
             return error.br_ssl_client_reset;
@@ -273,9 +279,36 @@ const HttpsState = struct {
 
     fn deinit(self: *Self, allocator: std.mem.Allocator) void
     {
+        allocator.free(self.rawAnchors);
         allocator.free(self.buf);
         if (self.anchors) |anchors| {
             anchors.deinit(allocator);
         }
     }
 };
+
+fn loadAnchorsFromOs(allocator: std.mem.Allocator) !bssl.crt.Anchors
+{
+    switch (builtin.target.os.tag) {
+        .linux => {
+            const certsPath = "/etc/ssl/certs/ca-certificates.crt";
+            const file = try std.fs.openFileAbsolute(certsPath, .{});
+            defer file.close();
+            const fileData = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
+            defer allocator.free(fileData);
+            return bssl.crt.Anchors.init(fileData, allocator);
+        },
+        .macos => {
+            // TODO temp
+            const certsPath = "/etc/ssl/certs/ca-certificates.crt";
+            const file = try std.fs.openFileAbsolute(certsPath, .{});
+            defer file.close();
+            const fileData = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
+            defer allocator.free(fileData);
+            return bssl.crt.Anchors.init(fileData, allocator);
+        },
+        else => {
+            @compileError("Unsupported OS");
+        },
+    }
+}
