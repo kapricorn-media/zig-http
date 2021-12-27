@@ -38,7 +38,7 @@ pub fn main() !void
     };
 
     const Wrapper = struct {
-        fn callback(request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
         {
             std.log.info("{}", .{request});
 
@@ -53,7 +53,7 @@ pub fn main() !void
             .privateKeyFileData = TEST_LOCALHOST_KEY,
         }
         else null;
-    var s = try server.Server.init(Wrapper.callback, httpsOptions, allocator);
+    var s = try server.Server(void).init(Wrapper.callback, {}, httpsOptions, allocator);
     defer s.deinit();
 
     std.log.info("Listening on {s}:{} HTTPS {}", .{TEST_IP, port, https});

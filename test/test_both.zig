@@ -9,8 +9,8 @@ const http = @import("http-common");
 const server = @import("http-server");
 
 const TEST_IP = "127.0.0.1";
+const TEST_HOST = "localhost";
 const TEST_PORT = 19191;
-const TEST_HOST = std.fmt.comptimePrint("{s}:{}", .{TEST_IP, TEST_PORT});
 
 const TEST_LOCALHOST_CRT = @embedFile("localhost.crt");
 const TEST_LOCALHOST_KEY = @embedFile("localhost.key");
@@ -18,7 +18,7 @@ const TEST_LOCALHOST_KEY = @embedFile("localhost.key");
 var _serverThread: std.Thread = undefined;
 var _failed = std.atomic.Atomic(bool).init(false);
 
-fn serverThread(s: *server.Server) void
+fn serverThread(s: *server.Server(void)) void
 {
     s.listen(TEST_IP, TEST_PORT) catch |err| {
         std.log.err("server listen error {}", .{err});
@@ -26,7 +26,7 @@ fn serverThread(s: *server.Server) void
     };
 }
 
-fn serverThreadStartAndWait(s: *server.Server) !void
+fn serverThreadStartAndWait(s: *server.Server(void)) !void
 {
     _serverThread = try std.Thread.spawn(.{}, serverThread, .{s});
     while (true) {
@@ -39,10 +39,10 @@ fn serverThreadStartAndWait(s: *server.Server) !void
     }
 }
 
-fn createHttpCodeCallback(comptime code: http.Code) server.CallbackType
+fn createHttpCodeCallback(comptime code: http.Code) server.Server(void).CallbackType
 {
     const Wrapper = struct {
-        fn callback(request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
         {
             try expectEqual(http.Method.Get, request.method);
             try expectEqualSlices(u8, "/", request.uri);
@@ -68,7 +68,7 @@ test "HTTPS GET / not trusted"
     var allocator = gpa.allocator();
 
     const Wrapper = struct {
-        fn callback(request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
         {
             // Request shouldn't go through
             _ = request; _ = stream;
@@ -80,7 +80,7 @@ test "HTTPS GET / not trusted"
         .certChainFileData = TEST_LOCALHOST_CRT,
         .privateKeyFileData = TEST_LOCALHOST_KEY,
     };
-    var s = try server.Server.init(Wrapper.callback, httpsOptions, allocator);
+    var s = try server.Server(void).init(Wrapper.callback, {}, httpsOptions, allocator);
     defer s.deinit();
     try serverThreadStartAndWait(&s);
     defer {
@@ -97,18 +97,14 @@ test "HTTPS GET / not trusted"
     );
 }
 
-test "HTTPS GET / 200"
+fn testCode(comptime code: http.Code, https: bool, allocator: std.mem.Allocator) !void
 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
-    var allocator = gpa.allocator();
-
-    const callback = createHttpCodeCallback(._200);
-    const httpsOptions = server.HttpsOptions {
+    const callback = createHttpCodeCallback(code);
+    const httpsOptions = if (https) server.HttpsOptions {
         .certChainFileData = TEST_LOCALHOST_CRT,
         .privateKeyFileData = TEST_LOCALHOST_KEY,
-    };
-    var s = try server.Server.init(callback, httpsOptions, allocator);
+    } else null;
+    var s = try server.Server(void).init(callback, {}, httpsOptions, allocator);
     defer s.deinit();
     try serverThreadStartAndWait(&s);
     defer {
@@ -120,28 +116,7 @@ test "HTTPS GET / 200"
     defer client.freeOverrideRootCaList(allocator);
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(true, TEST_PORT, "localhost", "/", null, allocator, &responseData, &response);
-    defer responseData.deinit();
-
-    try expectEqual(http.Code._200, response.code);
-    try expectEqualSlices(u8, "OK", response.message);
-    try expectEqual(@as(usize, 0), response.body.len);
-}
-
-fn testCode(comptime code: http.Code, https: bool, allocator: std.mem.Allocator) !void
-{
-    const callback = createHttpCodeCallback(code);
-    var s = try server.Server.init(callback, null, allocator);
-    defer s.deinit();
-    try serverThreadStartAndWait(&s);
-    defer {
-        s.stop();
-        _serverThread.join();
-    }
-
-    var responseData: std.ArrayList(u8) = undefined;
-    var response: client.Response = undefined;
-    try client.get(https, TEST_PORT, TEST_IP, "/", null, allocator, &responseData, &response);
+    try client.get(https, TEST_PORT, TEST_HOST, "/", null, allocator, &responseData, &response);
     defer responseData.deinit();
 
     try expectEqual(code, response.code);
@@ -159,14 +134,14 @@ test "HTTP GET / all codes, no data"
     inline for (@typeInfo(http.Code).Enum.fields) |f| {
         const code = @field(http.Code, f.name);
         try testCode(code, false, allocator);
-        // try testCode(code, true, allocator);
+        try testCode(code, true, allocator);
     }
 }
 
-fn createHttpUriCallback(comptime uri: []const u8, comptime response: []const u8) server.CallbackType
+fn createHttpUriCallback(comptime uri: []const u8, comptime response: []const u8) server.Server(void).CallbackType
 {
     const Wrapper = struct {
-        fn callback(request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
         {
             try expectEqual(http.Method.Get, request.method);
             try expectEqual(http.Version.v1_1, request.version);
@@ -196,8 +171,11 @@ fn testUri(comptime uri: []const u8, https: bool, allocator: std.mem.Allocator) 
     const out = "Hello. That is the correct URI!";
 
     const callback = createHttpUriCallback(uri, out);
-    try expect(!https);
-    var s = try server.Server.init(callback, null, allocator);
+    const httpsOptions = if (https) server.HttpsOptions {
+        .certChainFileData = TEST_LOCALHOST_CRT,
+        .privateKeyFileData = TEST_LOCALHOST_KEY,
+    } else null;
+    var s = try server.Server(void).init(callback, {}, httpsOptions, allocator);
     defer s.deinit();
     try serverThreadStartAndWait(&s);
     defer {
@@ -205,9 +183,12 @@ fn testUri(comptime uri: []const u8, https: bool, allocator: std.mem.Allocator) 
         _serverThread.join();
     }
 
+    try client.overrideRootCaList(TEST_LOCALHOST_CRT, allocator);
+    defer client.freeOverrideRootCaList(allocator);
+
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(https, TEST_PORT, TEST_IP, uri, null, allocator, &responseData, &response);
+    try client.get(https, TEST_PORT, TEST_HOST, uri, null, allocator, &responseData, &response);
 
     try expectEqual(http.Code._200, response.code);
     try expectEqualSlices(u8, "OK", response.message);
@@ -219,14 +200,14 @@ fn testUri(comptime uri: []const u8, https: bool, allocator: std.mem.Allocator) 
     }
 
     responseData.deinit();
-    try client.get(https, TEST_PORT, TEST_IP, "/", null, allocator, &responseData, &response);
+    try client.get(https, TEST_PORT, TEST_HOST, "/", null, allocator, &responseData, &response);
 
     try expectEqual(http.Code._404, response.code);
     try expectEqualSlices(u8, "Not Found", response.message);
     try expectEqual(@as(usize, 0), response.body.len);
 
     responseData.deinit();
-    try client.get(https, TEST_PORT, TEST_IP, "/this_is_the_wrong_uri", null, allocator, &responseData, &response);
+    try client.get(https, TEST_PORT, TEST_HOST, "/this_is_the_wrong_uri", null, allocator, &responseData, &response);
 
     try expectEqual(http.Code._404, response.code);
     try expectEqualSlices(u8, "Not Found", response.message);
@@ -248,13 +229,14 @@ test "HTTP GET different URIs"
 
     inline for (uris) |uri| {
         try testUri(uri, false, allocator);
+        try testUri(uri, true, allocator);
     }
 }
 
-fn createDataCallback(comptime in: []const u8, comptime out: []const u8) server.CallbackType
+fn createDataCallback(comptime in: []const u8, comptime out: []const u8) server.Server(void).CallbackType
 {
     const Wrapper = struct {
-        fn callback(request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
         {
             try expectEqual(http.Method.Post, request.method);
             try expectEqualSlices(u8, "/", request.uri);
@@ -282,8 +264,11 @@ fn testDataInOut(
     allocator: std.mem.Allocator) !void
 {
     const callback = createDataCallback(in, out);
-    try expect(!https);
-    var s = try server.Server.init(callback, null, allocator);
+    const httpsOptions = if (https) server.HttpsOptions {
+        .certChainFileData = TEST_LOCALHOST_CRT,
+        .privateKeyFileData = TEST_LOCALHOST_KEY,
+    } else null;
+    var s = try server.Server(void).init(callback, {}, httpsOptions, allocator);
     defer s.deinit();
     try serverThreadStartAndWait(&s);
     defer {
@@ -291,9 +276,11 @@ fn testDataInOut(
         _serverThread.join();
     }
 
+    try client.overrideRootCaList(TEST_LOCALHOST_CRT, allocator);
+    defer client.freeOverrideRootCaList(allocator);
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.post(https, TEST_PORT, TEST_IP, "/", null, in, allocator, &responseData, &response);
+    try client.post(https, TEST_PORT, TEST_HOST, "/", null, in, allocator, &responseData, &response);
     defer responseData.deinit();
 
     try expectEqual(http.Code._200, response.code);
@@ -337,6 +324,7 @@ test "HTTP POST / 200 data in/out"
 
     inline for (params) |p| {
         try testDataInOut(p.in, p.out, false, allocator);
+        try testDataInOut(p.in, p.out, true, allocator);
     }
 }
 
@@ -372,7 +360,7 @@ fn testCustomHeaders(https: bool, allocator: std.mem.Allocator) !void
     };
 
     const Wrapper = struct {
-        fn callback(request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
         {
             try expectEqual(http.Method.Get, request.method);
             try expectEqualSlices(u8, "/", request.uri);
@@ -403,8 +391,11 @@ fn testCustomHeaders(https: bool, allocator: std.mem.Allocator) !void
         }
     };
 
-    try expect(!https);
-    var s = try server.Server.init(Wrapper.callback, null, allocator);
+    const httpsOptions = if (https) server.HttpsOptions {
+        .certChainFileData = TEST_LOCALHOST_CRT,
+        .privateKeyFileData = TEST_LOCALHOST_KEY,
+    } else null;
+    var s = try server.Server(void).init(Wrapper.callback, {}, httpsOptions, allocator);
     defer s.deinit();
     try serverThreadStartAndWait(&s);
     defer {
@@ -412,9 +403,11 @@ fn testCustomHeaders(https: bool, allocator: std.mem.Allocator) !void
         _serverThread.join();
     }
 
+    try client.overrideRootCaList(TEST_LOCALHOST_CRT, allocator);
+    defer client.freeOverrideRootCaList(allocator);
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
-    try client.get(https, TEST_PORT, TEST_IP, "/", &requestHeaders, allocator, &responseData, &response);
+    try client.get(https, TEST_PORT, TEST_HOST, "/", &requestHeaders, allocator, &responseData, &response);
     defer responseData.deinit();
 
     try expectEqual(http.Code._200, response.code);
@@ -440,4 +433,62 @@ test "HTTP GET / 200 custom headers"
     var allocator = gpa.allocator();
 
     try testCustomHeaders(false, allocator);
+    try testCustomHeaders(true, allocator);
 }
+
+// fn testStatic(https: bool, allocator: std.mem.Allocator) !void
+// {
+//     const Wrapper = struct {
+//         fn callback(request: *const server.Request, stream: server.Stream) !void
+//         {
+//             try expectEqual(http.Method.Get, request.method);
+//             // try expectEqualSlices(u8, "/", request.uri);
+//             try expectEqual(http.Version.v1_1, request.version);
+//             try expectEqual(@as(usize, 0), request.body.len);
+//             if (http.getContentLength(request)) |contentLength| {
+//                 try expectEqual(@as(usize, 0), contentLength);
+//             } else {
+//                 return error.NoContentLength;
+//             }
+
+//             try server.serveStatic(stream, request.uri, "test", allocator);
+//         }
+//     };
+
+//     const httpsOptions = if (https) server.HttpsOptions {
+//         .certChainFileData = TEST_LOCALHOST_CRT,
+//         .privateKeyFileData = TEST_LOCALHOST_KEY,
+//     } else null;
+//     var s = try server.Server.init(Wrapper.callback, httpsOptions, allocator);
+//     defer s.deinit();
+//     try serverThreadStartAndWait(&s);
+//     defer {
+//         s.stop();
+//         _serverThread.join();
+//     }
+
+//     try client.overrideRootCaList(TEST_LOCALHOST_CRT, allocator);
+//     defer client.freeOverrideRootCaList(allocator);
+//     var responseData: std.ArrayList(u8) = undefined;
+//     var response: client.Response = undefined;
+//     try client.get(https, TEST_PORT, TEST_HOST, "/localhost.crt", null, allocator, &responseData, &response);
+//     defer responseData.deinit();
+
+//     try expectEqual(http.Code._200, response.code);
+//     try expectEqualSlices(u8, "OK", response.message);
+//     try expectEqualSlices(u8, TEST_LOCALHOST_CRT, response.body);
+//     if (http.getContentLength(response)) |contentLength| {
+//         try expectEqual(TEST_LOCALHOST_CRT.len, contentLength);
+//     } else {
+//         return error.NoContentLength;
+//     }
+// }
+
+// test "HTTP static"
+// {
+//     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+//     defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
+//     var allocator = gpa.allocator();
+
+//     try testStatic(false, allocator);
+// }

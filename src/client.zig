@@ -5,6 +5,7 @@ const bssl = @import("bearssl");
 const http = @import("http-common");
 
 const net_io = @import("net_io.zig");
+const macos_certs = @cImport(@cInclude("macos_certs.h"));
 
 var _anchorsOverride: ?bssl.crt.Anchors = null;
 
@@ -287,6 +288,27 @@ const HttpsState = struct {
     }
 };
 
+// TODO maybe move this to zig-bearssl? eh...
+const MacosCertState = struct {
+    allocator: std.mem.Allocator,
+    anchors: std.ArrayList(bssl.crt.Anchor),
+    success: bool,
+};
+
+fn macosCertCallback(userData: ?*anyopaque, bytes: [*c]const u8, len: c_int) callconv(.C) void
+{
+    var state = @ptrCast(*MacosCertState, @alignCast(@alignOf(*MacosCertState), userData));
+    var anchor = state.anchors.addOne() catch {
+        state.success = false;
+        return;
+    };
+    const slice = bytes[0..@intCast(usize, len)];
+    anchor.* = bssl.crt.Anchor.init(slice, state.allocator) catch {
+        state.success = false;
+        return;
+    };
+}
+
 fn loadAnchorsFromOs(allocator: std.mem.Allocator) !bssl.crt.Anchors
 {
     switch (builtin.target.os.tag) {
@@ -299,13 +321,24 @@ fn loadAnchorsFromOs(allocator: std.mem.Allocator) !bssl.crt.Anchors
             return bssl.crt.Anchors.init(fileData, allocator);
         },
         .macos => {
-            // TODO temp
-            const certsPath = "/etc/ssl/certs/ca-certificates.crt";
-            const file = try std.fs.openFileAbsolute(certsPath, .{});
-            defer file.close();
-            const fileData = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
-            defer allocator.free(fileData);
-            return bssl.crt.Anchors.init(fileData, allocator);
+            var state = MacosCertState {
+                .allocator = allocator,
+                .anchors = std.ArrayList(bssl.crt.Anchor).init(allocator),
+                .success = true,
+            };
+            defer state.anchors.deinit();
+
+            if (macos_certs.getRootCaCerts(&state, macosCertCallback) != 0) {
+                return error.macosGetRootCaCerts;
+            }
+            if (!state.success) {
+                return error.macosGetRootCaCertsCallback;
+            }
+
+            var anchors = bssl.crt.Anchors {
+                .anchors = state.anchors.toOwnedSlice(),
+            };
+            return anchors;
         },
         else => {
             @compileError("Unsupported OS");
