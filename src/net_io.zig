@@ -91,15 +91,8 @@ pub const Stream = struct {
 
     fn io(self: Self, mode: Mode, bufRead: []u8, bufWrite: []const u8) Error!usize
     {
-        std.log.warn("{}: io {}", .{std.Thread.getCurrentId(), mode});
-        if (mode == .Read) {
-            // std.log.warn("len {}", .{bufRead.len});
-        } else if (mode == .Write) {
-            // std.log.warn("buf {s}", .{bufWrite});
-        }
         var appBytes: usize = 0;
         while (true) {
-            // std.log.warn("looping, appBytes {}", .{appBytes});
             const state = bssl.c.br_ssl_engine_current_state(self.engine);
             switch (state) {
                 bssl.c.BR_SSL_CLOSED => {
@@ -122,7 +115,6 @@ pub const Stream = struct {
             const sendapp = ((state & bssl.c.BR_SSL_SENDAPP) != 0);
             const recvapp = ((state & bssl.c.BR_SSL_RECVAPP) != 0);
             var len: usize = undefined;
-            // std.log.warn("sendapp={} recvapp={} sendrec={} recvrec={}", .{sendapp, recvapp, sendrec, recvrec});
 
             if (mode == .Write and sendapp) {
                 const bufC = bssl.c.br_ssl_engine_sendapp_buf(self.engine, &len);
@@ -130,7 +122,7 @@ pub const Stream = struct {
                 const buf = bufC[0..len];
                 const n = std.math.min(buf.len, bufWrite.len);
                 std.mem.copy(u8, buf[0..n], bufWrite[0..n]);
-                std.log.warn(">> sendapp {}, wrote {}", .{len, n});
+                // std.log.warn(">> sendapp {}, wrote {}", .{len, n});
                 bssl.c.br_ssl_engine_sendapp_ack(self.engine, n);
                 appBytes = n;
                 break;
@@ -141,7 +133,7 @@ pub const Stream = struct {
                 const buf = bufC[0..len];
                 const n = std.math.min(buf.len, bufRead.len);
                 std.mem.copy(u8, bufRead[0..n], buf[0..n]);
-                std.log.warn("<< recvapp {}, read {}", .{len, n});
+                // std.log.warn("<< recvapp {}, read {}", .{len, n});
                 bssl.c.br_ssl_engine_recvapp_ack(self.engine, n);
                 appBytes = n;
                 break;
@@ -152,7 +144,7 @@ pub const Stream = struct {
                 const bufC = bssl.c.br_ssl_engine_sendrec_buf(self.engine, &len);
                 const buf = bufC[0..len];
                 const n = try self.stream.write(buf);
-                std.log.warn("-> sendrec {}, sent {}", .{len, n});
+                // std.log.warn("-> sendrec {}, sent {}", .{len, n});
                 if (n > 0) {
                     bssl.c.br_ssl_engine_sendrec_ack(self.engine, n);
                     acked = true;
@@ -160,7 +152,6 @@ pub const Stream = struct {
             }
 
             if (!acked and mode == .Flush) {
-                // std.log.warn("breaking flush", .{});
                 break;
             }
 
@@ -168,7 +159,7 @@ pub const Stream = struct {
                 const bufC = bssl.c.br_ssl_engine_recvrec_buf(self.engine, &len);
                 const buf = bufC[0..len];
                 const n = try self.stream.read(buf);
-                std.log.warn("<- recvrec {}, read {}", .{len, n});
+                // std.log.warn("<- recvrec {}, read {}", .{len, n});
                 if (n > 0) {
                     bssl.c.br_ssl_engine_recvrec_ack(self.engine, n);
                     acked = true;
@@ -176,11 +167,9 @@ pub const Stream = struct {
             }
 
             if (!acked and mode == .Read) {
-                // std.log.warn("nothing else to read", .{});
                 break;
             }
         }
-        std.log.warn("appBytes {}", .{appBytes});
         return appBytes;
     }
 };

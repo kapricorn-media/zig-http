@@ -4,17 +4,21 @@ const std = @import("std");
 const bssl = @import("bearssl");
 const http = @import("http-common");
 
-const certs = @import("certs.zig");
 const net_io = @import("net_io.zig");
 
-const localhost = @import("localhost.zig");
-
-var _rootCaListOverride: ?certs.RootCaList = null;
+var _anchorsOverride: ?bssl.crt.Anchors = null;
 
 pub fn overrideRootCaList(certFileData: []const u8, allocator: std.mem.Allocator) !void
 {
-    _rootCaListOverride = certs.RootCaList {.list = undefined};
-    try _rootCaListOverride.?.loadFromCrtFile(certFileData, allocator);
+    _anchorsOverride = try bssl.crt.Anchors.init(certFileData, allocator);
+}
+
+pub fn freeOverrideRootCaList(allocator: std.mem.Allocator) void
+{
+    if (_anchorsOverride) |anchors| {
+        anchors.deinit(allocator);
+        _anchorsOverride = null;
+    }
 }
 
 pub const RequestError = error {
@@ -81,8 +85,7 @@ pub fn request(
     outData: *std.ArrayList(u8),
     outResponse: *Response) RequestError!void
 {
-    var tcpStream = std.net.tcpConnectToHost(allocator, hostname, port) catch |err| {
-        std.log.err("tcpConnectToHostNonBlocking error {}", .{err});
+    var tcpStream = std.net.tcpConnectToHost(allocator, hostname, port) catch {
         return RequestError.ConnectError;
     };
     defer tcpStream.close();
@@ -97,8 +100,8 @@ pub fn request(
         }
     };
     defer if (httpsState) |state| allocator.destroy(state);
-    if (httpsState) |state| state.load(hostname, allocator) catch |err| {
-        std.log.err("httpState load error {}", .{err});
+    if (httpsState) |state| state.load(hostname, allocator) catch {
+        return RequestError.HttpsError;
     };
     defer if (httpsState) |state| state.deinit(allocator);
 
@@ -236,7 +239,7 @@ pub fn httpsPost(
 }
 
 const HttpsState = struct {
-    rootCaList: ?certs.RootCaList,
+    anchors: ?bssl.crt.Anchors,
     sslContext: bssl.c.br_ssl_client_context,
     x509Context: bssl.c.br_x509_minimal_context,
     buf: []u8,
@@ -245,21 +248,20 @@ const HttpsState = struct {
 
     fn load(self: *Self, hostname: [:0]const u8, allocator: std.mem.Allocator) !void
     {
-        var list: *const certs.RootCaList = undefined;
-        if (_rootCaListOverride) |_| {
-            self.rootCaList = null;
-            list = &_rootCaListOverride.?;
+        var anchors: *const bssl.crt.Anchors = undefined;
+        if (_anchorsOverride) |_| {
+            self.anchors = null;
+            anchors = &_anchorsOverride.?;
         } else {
-            self.rootCaList = certs.RootCaList {.list = undefined};
-            try self.rootCaList.?.load(allocator);
-            list = &self.rootCaList.?;
+            return error.TODOLoadOSAnchors;
+            // self.anchors = bssl.crt.Anchors.init();
+            // list = &self.anchors.?;
         }
         self.buf = try allocator.alloc(u8, bssl.c.BR_SSL_BUFSIZE_BIDI);
 
         bssl.c.br_ssl_client_init_full(
             &self.sslContext, &self.x509Context,
-            &localhost.TAs[0], localhost.TAs.len
-            // &list.list.items[0], list.list.items.len
+            &anchors.anchors[0], anchors.anchors.len
         );
         bssl.c.br_ssl_engine_set_buffer(&self.sslContext.eng, &self.buf[0], self.buf.len, 1);
 
@@ -272,8 +274,8 @@ const HttpsState = struct {
     fn deinit(self: *Self, allocator: std.mem.Allocator) void
     {
         allocator.free(self.buf);
-        if (self.rootCaList) |localList| {
-            localList.deinit(allocator);
+        if (self.anchors) |anchors| {
+            anchors.deinit(allocator);
         }
     }
 };

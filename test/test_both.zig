@@ -20,7 +20,6 @@ var _failed = std.atomic.Atomic(bool).init(false);
 
 fn serverThread(s: *server.Server) void
 {
-    std.log.warn("server thread {}", .{std.Thread.getCurrentId()});
     s.listen(TEST_IP, TEST_PORT) catch |err| {
         std.log.err("server listen error {}", .{err});
         _failed.store(true, .Release);
@@ -62,41 +61,41 @@ fn createHttpCodeCallback(comptime code: http.Code) server.CallbackType
     return Wrapper.callback;
 }
 
-// test "HTTPS GET / not trusted"
-// {
-//     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-//     defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
-//     var allocator = gpa.allocator();
+test "HTTPS GET / not trusted"
+{
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
+    var allocator = gpa.allocator();
 
-//     const Wrapper = struct {
-//         fn callback(request: *const server.Request, stream: server.Stream) !void
-//         {
-//             // Request shouldn't go through
-//             _ = request; _ = stream;
-//             try expect(false);
-//         }
-//     };
+    const Wrapper = struct {
+        fn callback(request: *const server.Request, stream: server.Stream) !void
+        {
+            // Request shouldn't go through
+            _ = request; _ = stream;
+            try expect(false);
+        }
+    };
 
-//     const httpsOptions = server.HttpsOptions {
-//         .certChainFileData = TEST_LOCALHOST_CRT,
-//         .privateKeyFileData = TEST_LOCALHOST_KEY,
-//     };
-//     var s = try server.Server.init(Wrapper.callback, httpsOptions, allocator);
-//     defer s.deinit();
-//     try serverThreadStartAndWait(&s);
-//     defer {
-//         s.stop();
-//         _serverThread.join();
-//     }
+    const httpsOptions = server.HttpsOptions {
+        .certChainFileData = TEST_LOCALHOST_CRT,
+        .privateKeyFileData = TEST_LOCALHOST_KEY,
+    };
+    var s = try server.Server.init(Wrapper.callback, httpsOptions, allocator);
+    defer s.deinit();
+    try serverThreadStartAndWait(&s);
+    defer {
+        s.stop();
+        _serverThread.join();
+    }
 
-//     // localhost certificate not in trusted CAs, should fail
-//     var responseData: std.ArrayList(u8) = undefined;
-//     var response: client.Response = undefined;
-//     try expectError(
-//         client.RequestError.HttpsError,
-//         client.get(true, TEST_PORT, "localhost", "/", null, allocator, &responseData, &response)
-//     );
-// }
+    // localhost certificate not in trusted CAs, should fail
+    var responseData: std.ArrayList(u8) = undefined;
+    var response: client.Response = undefined;
+    try expectError(
+        client.RequestError.HttpsError,
+        client.get(true, TEST_PORT, "localhost", "/", null, allocator, &responseData, &response)
+    );
+}
 
 test "HTTPS GET / 200"
 {
@@ -118,6 +117,7 @@ test "HTTPS GET / 200"
     }
 
     try client.overrideRootCaList(TEST_LOCALHOST_CRT, allocator);
+    defer client.freeOverrideRootCaList(allocator);
     var responseData: std.ArrayList(u8) = undefined;
     var response: client.Response = undefined;
     try client.get(true, TEST_PORT, "localhost", "/", null, allocator, &responseData, &response);
