@@ -85,8 +85,8 @@ pub fn addLibClient(
     step.addPackage(pkg);
     const targetOs = if (target.os_tag) |tag| tag else builtin.os.tag;
     if (targetOs == .macos) {
-        step.addIncludeDir("src");
-        step.addCSourceFile("src/macos_certs.m", &[_][]const u8{
+        step.addIncludeDir(dir ++ "/src");
+        step.addCSourceFile(dir ++ "/src/macos_certs.m", &[_][]const u8{
             "-Wall",
             "-Werror",
             "-Wextra",
