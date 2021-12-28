@@ -4,3 +4,6 @@
 [submodule "deps/zig-openssl"]
 	path = deps/zig-openssl
 	url = https://github.com/kapricorn-media/zig-openssl
+[submodule "deps/zig-bearssl"]
+	path = deps/zig-bearssl
+	url = https://github.com/kapricorn-media/zig-bearssl.git
