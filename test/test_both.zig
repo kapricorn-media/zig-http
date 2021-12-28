@@ -128,7 +128,7 @@ fn testCode(comptime code: http.Code, https: bool, allocator: std.mem.Allocator)
     try expectEqual(@as(usize, 0), response.body.len);
 }
 
-test "HTTP GET / all codes, no data"
+test "GET / all codes, no data"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
@@ -211,7 +211,7 @@ fn testUri(comptime uri: []const u8, https: bool, allocator: std.mem.Allocator) 
     responseData.deinit();
 }
 
-test "HTTP GET different URIs"
+test "GET different URIs"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
@@ -280,7 +280,7 @@ fn testDataInOut(
     try expectEqual(out.len, try http.getContentLength(response));
 }
 
-test "HTTP POST / 200 data in/out"
+test "POST / 200 data in/out"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
@@ -409,7 +409,7 @@ fn testCustomHeaders(https: bool, allocator: std.mem.Allocator) !void
     }
 }
 
-test "HTTP GET / 200 custom headers"
+test "GET / 200 custom headers"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
@@ -429,7 +429,7 @@ fn testStatic(https: bool, allocator: std.mem.Allocator) !void
         fn callback(state: *const State, request: *const server.Request, stream: server.Stream) !void
         {
             try expectEqual(http.Method.Get, request.method);
-            // try expectEqualSlices(u8, "/", request.uri);
+            try expectEqualSlices(u8, "/localhost.crt", request.uri);
             try expectEqual(http.Version.v1_1, request.version);
             try expectEqual(@as(usize, 0), request.body.len);
             try expectEqual(@as(usize, 0), try http.getContentLength(request));
@@ -466,7 +466,7 @@ fn testStatic(https: bool, allocator: std.mem.Allocator) !void
     try expectEqual(TEST_LOCALHOST_CRT.len, try http.getContentLength(response));
 }
 
-test "HTTP static"
+test "serve static"
 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
@@ -474,4 +474,70 @@ test "HTTP static"
 
     try testStatic(false, allocator);
     try testStatic(true, allocator);
+}
+
+fn testQueryParams(https: bool, allocator: std.mem.Allocator) !void
+{
+    const uri = "/this/is/a/test/uri";
+    const queryString = "?param1=value1&param2=value2&param3=value3&hello=world";
+    const params = [_]http.QueryParam {
+        .{.name = "param1", .value = "value1"},
+        .{.name = "param2", .value = "value2"},
+        .{.name = "param3", .value = "value3"},
+        .{.name = "hello", .value = "world"},
+    };
+    const uriFull = uri ++ queryString;
+
+    const Wrapper = struct {
+        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
+        {
+            try expectEqual(http.Method.Get, request.method);
+            try expectEqualSlices(u8, uriFull, request.uriFull);
+            try expectEqualSlices(u8, uri, request.uri);
+            try expectEqual(http.Version.v1_1, request.version);
+            try expectEqual(@as(usize, 0), request.body.len);
+            try expectEqual(@as(usize, 0), try http.getContentLength(request));
+            try expectEqual(params.len, request.queryParams.len);
+            for (params) |_, i| {
+                try expectEqualSlices(u8, params[i].name, request.queryParams[i].name);
+                try expectEqualSlices(u8, params[i].value, request.queryParams[i].value);
+            }
+
+            try server.writeCode(stream, ._200);
+            try server.writeEndHeader(stream);
+        }
+    };
+
+    const httpsOptions = if (https) server.HttpsOptions {
+        .certChainFileData = TEST_LOCALHOST_CRT,
+        .privateKeyFileData = TEST_LOCALHOST_KEY,
+    } else null;
+    var s = try server.Server(void).init(Wrapper.callback, {}, httpsOptions, allocator);
+    defer s.deinit();
+    try serverThreadStartAndWait(void, &s);
+    defer {
+        s.stop();
+        _serverThread.join();
+    }
+
+    try client.overrideRootCaList(TEST_LOCALHOST_CRT, allocator);
+    defer client.freeOverrideRootCaList(allocator);
+    var responseData: std.ArrayList(u8) = undefined;
+    var response: client.Response = undefined;
+    try client.get(https, TEST_PORT, TEST_HOST, uriFull, null, allocator, &responseData, &response);
+    defer responseData.deinit();
+
+    try expectEqual(http.Code._200, response.code);
+    try expectEqualSlices(u8, "OK", response.message);
+    try expectEqual(@as(usize, 0), response.body.len);
+}
+
+test "query params"
+{
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer expect(!gpa.deinit()) catch |err| std.log.err("{}", .{err});
+    var allocator = gpa.allocator();
+
+    try testQueryParams(false, allocator);
+    try testQueryParams(true, allocator);
 }

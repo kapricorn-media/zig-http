@@ -7,14 +7,17 @@ const net_io = @import("net_io.zig");
 
 pub const Stream = net_io.Stream;
 
-// pub const CallbackType = fn(request: *const Request, stream: net_io.Stream) anyerror!void;
-
 pub const Request = struct {
     method: http.Method,
+    /// full URI, including query params
+    uriFull: []const u8,
+    /// just the path, no query params
     uri: []const u8,
+    queryParamsBuf: [http.MAX_QUERY_PARAMS]http.QueryParam,
+    queryParams: []http.QueryParam,
     version: http.Version,
-    numHeaders: u32,
-    headers: [http.MAX_HEADERS]http.Header,
+    headersBuf: [http.MAX_HEADERS]http.Header,
+    headers: []http.Header,
     body: []const u8,
 
     const Self = @This();
@@ -25,12 +28,12 @@ pub const Request = struct {
         _ = fmt; _ = options;
         try std.fmt.format(
             writer,
-            "[method={} uri={s} version={} numHeaders={} body.len={}]",
-            .{self.method, self.uri, self.version, self.numHeaders, self.body.len}
+            "[method={} uri={s} version={} headers.len={} body.len={}]",
+            .{self.method, self.uri, self.version, self.headers.len, self.body.len}
         );
     }
 
-    fn loadHeaderData(self: *Self, header: []const u8) !void
+    fn loadHeaderData(self: *Self, header: []const u8, allocator: std.mem.Allocator) !void
     {
         var it = std.mem.split(u8, header, "\r\n");
 
@@ -38,7 +41,10 @@ pub const Request = struct {
         var itFirst = std.mem.split(u8, first, " ");
         const methodString = itFirst.next() orelse return error.NoHttpMethod;
         self.method = http.stringToMethod(methodString) orelse return error.UnknownHttpMethod;
-        self.uri = itFirst.next() orelse return error.NoUri;
+        const uriEncoded = itFirst.next() orelse return error.NoUri;
+        self.uriFull = try http.uriDecode(uriEncoded, allocator);
+        errdefer allocator.free(self.uriFull);
+        try http.readQueryParams(self, self.uriFull);
         const versionString = itFirst.rest();
         self.version = http.stringToVersion(versionString) orelse return error.UnknownHttpVersion;
 
@@ -48,6 +54,11 @@ pub const Request = struct {
         if (rest.len != 0) {
             return error.TrailingStuff;
         }
+    }
+
+    fn deinit(self: *Self, allocator: std.mem.Allocator) void
+    {
+        allocator.free(self.uriFull);
     }
 };
 
@@ -232,6 +243,12 @@ pub fn Server(comptime UserDataType: type) type
             _ = address;
 
             var request: Request = undefined;
+            var requestLoaded = false;
+            defer {
+                if (requestLoaded) {
+                    request.deinit(self.allocator);
+                }
+            }
             var parsedHeader = false;
             var header = std.ArrayList(u8).init(self.allocator);
             defer header.deinit();
@@ -256,7 +273,8 @@ pub fn Server(comptime UserDataType: type) type
                     try header.appendSlice(bytes);
                     if (std.mem.indexOf(u8, header.items, "\r\n\r\n")) |ind| {
                         const headerLength = ind + 4;
-                        try request.loadHeaderData(header.items[0..headerLength]);
+                        try request.loadHeaderData(header.items[0..headerLength], self.allocator);
+                        requestLoaded = true;
                         contentLength = http.getContentLength(request) catch |err| blk: {
                             switch (err) {
                                 error.NoContentLength => {},

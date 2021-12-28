@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const MAX_HEADERS = 8 * 1024;
+pub const MAX_QUERY_PARAMS = 8 * 1024;
 
 pub const Code = enum(u32)
 {
@@ -216,10 +217,9 @@ pub const Header = struct
 /// Returns null otherwise.
 pub fn getHeader(reqOrRes: anytype, header: []const u8) ?[]const u8
 {
-    var i: @TypeOf(reqOrRes.numHeaders) = 0;
-    while (i < reqOrRes.numHeaders) : (i += 1) {
-        if (std.mem.eql(u8, reqOrRes.headers[i].name, header)) {
-            return reqOrRes.headers[i].value;
+    for (reqOrRes.headers) |h| {
+        if (std.mem.eql(u8, h.name, header)) {
+            return h.value;
         }
     }
     return null;
@@ -238,7 +238,7 @@ pub fn getContentLength(reqOrRes: anytype) ContentLengthError!usize
 
 pub fn readHeaders(reqOrRes: anytype, headerIt: *std.mem.SplitIterator(u8)) !void
 {
-    reqOrRes.numHeaders = 0;
+    var n: usize = 0;
     while (true) {
         const header = headerIt.next() orelse {
             return error.UnexpectedEndOfHeader;
@@ -248,11 +248,99 @@ pub fn readHeaders(reqOrRes: anytype, headerIt: *std.mem.SplitIterator(u8)) !voi
         }
 
         var itHeader = std.mem.split(u8, header, ":");
-        reqOrRes.headers[reqOrRes.numHeaders].name = itHeader.next() orelse {
+        reqOrRes.headersBuf[n].name = itHeader.next() orelse {
             return error.HeaderMissingName;
         };
         const v = itHeader.rest();
-        reqOrRes.headers[reqOrRes.numHeaders].value = std.mem.trimLeft(u8, v, " ");
-        reqOrRes.numHeaders += 1;
+        reqOrRes.headersBuf[n].value = std.mem.trimLeft(u8, v, " ");
+        n += 1;
     }
+    reqOrRes.headers = reqOrRes.headersBuf[0..n];
+}
+
+pub const QueryParamError = error {
+    NoUri,
+    ExtraQuestionMarks,
+    IncompleteParam,
+    ExtraEquals,
+};
+
+pub const QueryParam = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+pub fn readQueryParams(request: anytype, requestPath: []const u8) QueryParamError!void
+{
+    var itQMark = std.mem.split(u8, requestPath, "?");
+    request.uri = itQMark.next() orelse return error.NoUri;
+    const params = itQMark.next() orelse {
+        request.queryParams.len = 0;
+        return;
+    };
+    if (itQMark.next()) |_| return error.ExtraQuestionMarks;
+
+    var itParams = std.mem.split(u8, params, "&");
+    var n: usize = 0;
+    while (itParams.next()) |param| {
+        var itParam = std.mem.split(u8, param, "=");
+        const name = itParam.next() orelse return error.IncompleteParam;
+        const value = itParam.next() orelse return error.IncompleteParam;
+        if (itParam.next()) |_| return error.ExtraEquals;
+
+        request.queryParamsBuf[n].name = name;
+        request.queryParamsBuf[n].value = value;
+        n += 1;
+    }
+    request.queryParams = request.queryParamsBuf[0..n];
+}
+
+// TODO dupe in zig-bearssl tests
+fn hexDigitToNumber(digit: u8) !u8
+{
+    if ('0' <= digit and digit <= '9') {
+        return digit - '0';
+    } else if ('a' <= digit and digit <= 'f') {
+        return digit - 'a' + 10;
+    } else if ('A' <= digit and digit <= 'F') {
+        return digit - 'A' + 10;
+    } else {
+        return error.BadDigit;
+    }
+}
+
+pub const UriDecodeError = error {
+    BadPercentSequence,
+    AllocError,
+};
+
+pub fn uriDecode(uri: []const u8, allocator: std.mem.Allocator) UriDecodeError![]const u8
+{
+    var out = std.ArrayList(u8).initCapacity(allocator, uri.len) catch return error.AllocError;
+    defer out.deinit();
+
+    var i: usize = 0;
+    while (i < uri.len) {
+        if (uri[i] == '%') {
+            if (i + 2 >= uri.len) {
+                return error.BadPercentSequence;
+            }
+            const hexNum1 = hexDigitToNumber(uri[i + 1]) catch return error.BadPercentSequence;
+            const hexNum2 = hexDigitToNumber(uri[i + 2]) catch return error.BadPercentSequence;
+            const char = (hexNum1 << 4) + hexNum2;
+            out.append(char) catch return error.AllocError;
+            i += 3;
+        } else {
+            out.append(uri[i]) catch return error.AllocError;
+            i += 1;
+        }
+    }
+
+    return out.toOwnedSlice();
+}
+
+pub fn uriEncode(uri: []const u8) ![]const u8
+{
+    _ = uri;
+    @compileError("unimplemented");
 }

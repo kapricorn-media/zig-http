@@ -37,8 +37,8 @@ pub const Response = struct
     version: http.Version,
     code: http.Code,
     message: []const u8,
-    numHeaders: u32,
-    headers: [http.MAX_HEADERS]http.Header,
+    headersBuf: [http.MAX_HEADERS]http.Header,
+    headers: []http.Header,
     body: []const u8,
 
     const Self = @This();
