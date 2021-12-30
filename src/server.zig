@@ -175,6 +175,19 @@ pub fn Server(comptime UserDataType: type) type
                     break;
                 }
 
+                var pollFds = [_]std.os.pollfd {
+                    .{
+                        .fd = self.sockfd,
+                        .events = std.os.POLL.STANDARD,
+                        .revents = undefined,
+                    },
+                };
+                const timeout = 500; // milliseconds, TODO make configurable
+                const pollResult = try std.os.poll(&pollFds, timeout);
+                if (pollResult == 0) {
+                    continue;
+                }
+
                 var acceptedAddress: std.net.Address = undefined;
                 var addrLen: std.os.socklen_t = @sizeOf(std.net.Address);
                 const fd = std.os.accept(
@@ -185,7 +198,7 @@ pub fn Server(comptime UserDataType: type) type
                 ) catch |err| {
                     switch (err) {
                         std.os.AcceptError.WouldBlock => {
-                            // sleep? burn CPU?
+                            std.log.err("accept WouldBlock after poll success", .{});
                         },
                         else => {
                             std.log.err("accept error {}", .{err});
