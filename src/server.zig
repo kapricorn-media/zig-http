@@ -178,7 +178,8 @@ pub fn Server(comptime UserDataType: type) type
                 var pollFds = [_]std.os.pollfd {
                     .{
                         .fd = self.sockfd,
-                        .events = std.os.POLL.STANDARD,
+                        .events = std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.OUT |
+                            std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL,
                         .revents = undefined,
                     },
                 };
