@@ -2,13 +2,16 @@ const std = @import("std");
 
 const bssl = @import("bearssl");
 
+const POLL_IN = std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL;
+const POLL_OUT = std.os.POLL.OUT | std.os.POLL.PRI | std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL;
+
 pub const Stream = struct {
-    stream: std.net.Stream,
+    sockfd: std.os.socket_t,
     engine: ?*bssl.c.br_ssl_engine_context,
 
     const Self = @This();
 
-    pub const Error = std.net.Stream.ReadError || std.net.Stream.WriteError || error {BsslError};
+    pub const Error = std.os.ReadError || std.os.WriteError || std.os.PollError || error {BsslError};
 
     const Mode = enum {
         Flush,
@@ -16,13 +19,26 @@ pub const Stream = struct {
         Write,
     };
 
-    pub fn init(stream: std.net.Stream, engine: ?*bssl.c.br_ssl_engine_context) Self
+    pub fn init(sockfd: std.os.socket_t, engine: ?*bssl.c.br_ssl_engine_context) Self
     {
         var self = Self {
-            .stream = stream,
+            .sockfd = sockfd,
             .engine = engine,
         };
         return self;
+    }
+
+    pub fn poll(self: Self, isRead: bool) std.os.PollError!usize
+    {
+        var pollFds = [_]std.os.pollfd {
+            .{
+                .fd = self.sockfd,
+                .events = if (isRead) POLL_IN else POLL_OUT,
+                .revents = undefined,
+            },
+        };
+        const timeout = 500; // milliseconds, TODO make configurable
+        return std.os.poll(&pollFds, timeout);
     }
 
     pub fn read(self: Self, buffer: []u8) Error!usize
@@ -30,7 +46,7 @@ pub const Stream = struct {
         if (self.engine) |_| {
             return self.io(.Read, buffer, undefined);
         } else {
-            return self.stream.read(buffer);
+            return self.rawRead(buffer);
         }
     }
 
@@ -39,7 +55,7 @@ pub const Stream = struct {
         if (self.engine) |_| {
             return self.io(.Write, undefined, buffer);
         } else {
-            return self.stream.write(buffer);
+            return self.rawWrite(buffer);
         }
     }
 
@@ -47,8 +63,14 @@ pub const Stream = struct {
     {
         var index: usize = 0;
         while (index != buffer.len) {
+            const pollResult = try self.poll(false);
+            if (pollResult == 0) {
+                continue;
+            }
             index += self.write(buffer[index..]) catch |err| switch (err) {
-                error.WouldBlock => continue,
+                error.WouldBlock => {
+                    continue;
+                },
                 else => |e| return e,
             };
         }
@@ -143,7 +165,7 @@ pub const Stream = struct {
             if (sendrec) {
                 const bufC = bssl.c.br_ssl_engine_sendrec_buf(self.engine, &len);
                 const buf = bufC[0..len];
-                const n = try self.stream.write(buf);
+                const n = try self.rawWrite(buf);
                 // std.log.warn("-> sendrec {}, sent {}", .{len, n});
                 if (n > 0) {
                     bssl.c.br_ssl_engine_sendrec_ack(self.engine, n);
@@ -158,7 +180,7 @@ pub const Stream = struct {
             if (!acked and recvrec) {
                 const bufC = bssl.c.br_ssl_engine_recvrec_buf(self.engine, &len);
                 const buf = bufC[0..len];
-                const n = try self.stream.read(buf);
+                const n = try self.rawRead(buf);
                 // std.log.warn("<- recvrec {}, read {}", .{len, n});
                 if (n > 0) {
                     bssl.c.br_ssl_engine_recvrec_ack(self.engine, n);
@@ -171,5 +193,15 @@ pub const Stream = struct {
             }
         }
         return appBytes;
+    }
+
+    fn rawRead(self: Self, buf: []u8) std.os.ReadError!usize
+    {
+        return std.os.read(self.sockfd, buf);
+    }
+
+    fn rawWrite(self: Self, buf: []const u8) std.os.WriteError!usize
+    {
+        return std.os.write(self.sockfd, buf);
     }
 };

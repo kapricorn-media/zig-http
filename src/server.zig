@@ -5,6 +5,9 @@ const http = @import("http-common");
 
 const net_io = @import("net_io.zig");
 
+const POLL_EVENTS = std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.OUT | std.os.POLL.ERR |
+    std.os.POLL.HUP | std.os.POLL.NVAL;
+
 pub const Stream = net_io.Stream;
 
 pub const Request = struct {
@@ -178,8 +181,7 @@ pub fn Server(comptime UserDataType: type) type
                 var pollFds = [_]std.os.pollfd {
                     .{
                         .fd = self.sockfd,
-                        .events = std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.OUT |
-                            std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL,
+                        .events = POLL_EVENTS,
                         .revents = undefined,
                     },
                 };
@@ -199,7 +201,7 @@ pub fn Server(comptime UserDataType: type) type
                 ) catch |err| {
                     switch (err) {
                         std.os.AcceptError.WouldBlock => {
-                            std.log.err("accept WouldBlock after poll success", .{});
+                            continue;
                         },
                         else => {
                             std.log.err("accept error {}", .{err});
@@ -226,7 +228,7 @@ pub fn Server(comptime UserDataType: type) type
                     engine = &context.eng;
                 }
 
-                var stream = net_io.Stream.init(std.net.Stream {.handle = fd}, engine);
+                var stream = net_io.Stream.init(fd, engine);
                 defer stream.closeHttpsIfOpen() catch {};
 
                 self.handleRequest(acceptedAddress, stream) catch |err| {
@@ -270,6 +272,11 @@ pub fn Server(comptime UserDataType: type) type
             defer body.deinit();
             var contentLength: usize = 0;
             while (true) {
+                const pollResult = try stream.poll(true);
+                if (pollResult == 0) {
+                    continue;
+                }
+
                 const n = stream.read(self.buf) catch |err| switch (err) {
                     std.os.ReadError.WouldBlock => {
                         continue;

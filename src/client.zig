@@ -110,7 +110,7 @@ pub fn request(
     defer if (httpsState) |state| state.deinit(allocator);
 
     var engine = if (httpsState) |_| &httpsState.?.sslContext.eng else null;
-    var stream = net_io.Stream.init(tcpStream, engine);
+    var stream = net_io.Stream.init(tcpStream.handle, engine);
 
     const contentLength = if (body) |b| b.len else 0;
     std.fmt.format(
