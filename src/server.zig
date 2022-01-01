@@ -272,7 +272,8 @@ pub fn Server(comptime UserDataType: type) type
             defer body.deinit();
             var contentLength: usize = 0;
             while (true) {
-                const pollResult = try stream.poll(true);
+                const timeout = 500; // milliseconds, TODO make configurable
+                const pollResult = try stream.pollIn(timeout);
                 if (pollResult == 0) {
                     continue;
                 }

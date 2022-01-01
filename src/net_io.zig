@@ -28,16 +28,15 @@ pub const Stream = struct {
         return self;
     }
 
-    pub fn poll(self: Self, isRead: bool) std.os.PollError!usize
+    pub fn pollIn(self: Self, timeout: i32) std.os.PollError!usize
     {
         var pollFds = [_]std.os.pollfd {
             .{
                 .fd = self.sockfd,
-                .events = if (isRead) POLL_IN else POLL_OUT,
+                .events = POLL_IN,
                 .revents = undefined,
             },
         };
-        const timeout = 500; // milliseconds, TODO make configurable
         return std.os.poll(&pollFds, timeout);
     }
 
@@ -63,7 +62,15 @@ pub const Stream = struct {
     {
         var index: usize = 0;
         while (index != buffer.len) {
-            const pollResult = try self.poll(false);
+            var pollFds = [_]std.os.pollfd {
+                .{
+                    .fd = self.sockfd,
+                    .events = POLL_OUT,
+                    .revents = undefined,
+                },
+            };
+            const timeout = 50; // milliseconds, TODO make configurable
+            const pollResult = try std.os.poll(&pollFds, timeout);
             if (pollResult == 0) {
                 continue;
             }
@@ -200,8 +207,22 @@ pub const Stream = struct {
         return std.os.read(self.sockfd, buf);
     }
 
-    fn rawWrite(self: Self, buf: []const u8) std.os.WriteError!usize
+    fn rawWrite(self: Self, buf: []const u8) (std.os.WriteError || std.os.PollError)!usize
     {
+        var pollFds = [_]std.os.pollfd {
+            .{
+                .fd = self.sockfd,
+                .events = POLL_OUT,
+                .revents = undefined,
+            },
+        };
+        const pollResult = try std.os.poll(&pollFds, 0);
+        if (pollResult == 0) {
+            return error.WouldBlock;
+        }
+        if ((pollFds[0].revents & std.os.POLL.OUT) == 0) {
+            return error.BrokenPipe;
+        }
         return std.os.write(self.sockfd, buf);
     }
 };
