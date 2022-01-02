@@ -12,6 +12,8 @@ pub const Stream = struct {
     const Self = @This();
 
     pub const Error = std.os.ReadError || std.os.WriteError || std.os.PollError || error {BsslError};
+    pub const Reader = Self;
+    pub const Writer = Self;
 
     const Mode = enum {
         Flush,
@@ -38,6 +40,16 @@ pub const Stream = struct {
             },
         };
         return std.os.poll(&pollFds, timeout);
+    }
+
+    pub fn reader(self: Self) Reader
+    {
+        return self;
+    }
+
+    pub fn writer(self: Self) Writer
+    {
+        return self;
     }
 
     pub fn read(self: Self, buffer: []u8) Error!usize
@@ -216,6 +228,7 @@ pub const Stream = struct {
                 .revents = undefined,
             },
         };
+        // TODO is this slow?
         const pollResult = try std.os.poll(&pollFds, 0);
         if (pollResult == 0) {
             return error.WouldBlock;
@@ -223,6 +236,7 @@ pub const Stream = struct {
         if ((pollFds[0].revents & std.os.POLL.OUT) == 0) {
             return error.BrokenPipe;
         }
+
         return std.os.write(self.sockfd, buf);
     }
 };

@@ -3,7 +3,7 @@ const std = @import("std");
 const http = @import("http-common");
 const server = @import("http-server");
 
-const TEST_IP = "127.0.0.1";
+const TEST_IP = "0.0.0.0";
 
 const TEST_LOCALHOST_CRT = @embedFile("localhost.crt");
 const TEST_LOCALHOST_KEY = @embedFile("localhost.key");
@@ -41,10 +41,10 @@ pub fn main() !void
         allocator: std.mem.Allocator,
     };
     const Wrapper = struct {
-        fn callback(state: *const State, request: *const server.Request, stream: server.Stream) !void
+        fn callback(state: *const State, request: *const server.Request, writer: server.Writer) !void
         {
             std.log.info("{}", .{request});
-            try server.serveStatic(stream, request.uri, ".", state.allocator);
+            try server.serveStatic(writer, request.uri, ".", state.allocator);
         }
     };
 

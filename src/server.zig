@@ -8,7 +8,7 @@ const net_io = @import("net_io.zig");
 const POLL_EVENTS = std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.OUT | std.os.POLL.ERR |
     std.os.POLL.HUP | std.os.POLL.NVAL;
 
-pub const Stream = net_io.Stream;
+pub const Writer = net_io.Stream.Writer;
 
 pub const Request = struct {
     method: http.Method,
@@ -65,6 +65,11 @@ pub const Request = struct {
     }
 };
 
+const ConnectionHttps = struct {
+    context: bssl.c.br_ssl_server_context,
+    buf: []u8,
+};
+
 pub const HttpsOptions = struct {
     certChainFileData: []const u8,
     privateKeyFileData: []const u8,
@@ -73,213 +78,128 @@ pub const HttpsOptions = struct {
 const HttpsState = struct {
     chain: bssl.crt.Chain,
     key: bssl.key.Key,
-    buf: []u8,
 };
 
 pub fn Server(comptime UserDataType: type) type
 {
-    return struct {
-        allocator: std.mem.Allocator,
+    const CallbackType = fn(
+        userData: UserDataType,
+        request: *const Request,
+        writer: Writer
+    ) anyerror!void;
+
+    const Connection = struct {
+        active: std.atomic.Atomic(bool),
         callback: CallbackType,
         userData: UserDataType,
-        listening: std.atomic.Atomic(bool),
-        listenExited: std.atomic.Atomic(bool),
-        sockfd: std.os.socket_t,
-        listenAddress: std.net.Address,
-        buf: []u8,
-        httpsState: ?HttpsState,
+        https: ?ConnectionHttps,
+        stream: net_io.Stream,
+        address: std.net.Address,
+        thread: std.Thread,
 
         const Self = @This();
 
-        /// Server request callback type.
-        /// Don't return errors for plain application-specific stuff you can handle thru HTTP codes.
-        /// Errors should be used only for IO failures, tests, or other very special situations. 
-        pub const CallbackType = fn(
-            userData: UserDataType,
-            request: *const Request,
-            stream: net_io.Stream
-        ) anyerror!void;
-
-        pub fn init(
+        fn init(
             callback: CallbackType,
             userData: UserDataType,
-            httpsOptions: ?HttpsOptions,
+            https: bool,
             allocator: std.mem.Allocator) !Self
         {
             var self = Self {
-                .allocator = allocator,
+                .active = std.atomic.Atomic(bool).init(false),
                 .callback = callback,
                 .userData = userData,
-                .listening = std.atomic.Atomic(bool).init(false),
-                .listenExited = std.atomic.Atomic(bool).init(true),
-                .sockfd = undefined,
-                .listenAddress = undefined,
-                .buf = try allocator.alloc(u8, 1024 * 1024),
-                .httpsState = null,
+                .https = null,
+                .stream = undefined,
+                .address = undefined,
+                .thread = undefined,
             };
-            errdefer allocator.free(self.buf);
-
-            if (httpsOptions) |options| {
-                self.httpsState = HttpsState {
-                    .chain = try bssl.crt.Chain.init(options.certChainFileData, allocator),
-                    .key = try bssl.key.Key.init(options.privateKeyFileData, allocator),
+            if (https) {
+                self.https = ConnectionHttps {
+                    .context = undefined,
                     .buf = try allocator.alloc(u8, bssl.c.BR_SSL_BUFSIZE_BIDI),
                 };
             }
-
             return self;
         }
 
-        pub fn deinit(self: *Self) void
+        fn deinit(self: Self, allocator: std.mem.Allocator) void
         {
-            if (self.listening.load(.Acquire)) {
-                std.log.err("server deinit called without stop", .{});
-            }
-
-            self.allocator.free(self.buf);
-            if (self.httpsState) |_| {
-                self.httpsState.?.chain.deinit(self.allocator);
-                self.httpsState.?.key.deinit(self.allocator);
-                self.allocator.free(self.httpsState.?.buf);
+            if (self.https) |h| {
+                allocator.free(h.buf);
             }
         }
 
-        pub fn listen(self: *Self, ip: []const u8, port: u16) !void
+        fn load(
+            self: *Self,
+            sockfd: std.os.socket_t,
+            address: std.net.Address,
+            https: ?HttpsState,
+            allocator: std.mem.Allocator) !void
         {
-            self.listenExited.store(false, .Release);
-            defer self.listenExited.store(true, .Release);
+            std.debug.assert((self.https == null and https == null) or (self.https != null and https != null));
+            var engine: ?*bssl.c.br_ssl_engine_context = null;
+            if (self.https) |_| {
+                bssl.c.br_ssl_server_init_full_rsa(
+                    &self.https.?.context,
+                    &https.?.chain.chain[0], https.?.chain.chain.len,
+                    &https.?.key.rsaKey);
+                bssl.c.br_ssl_engine_set_buffer(
+                    &self.https.?.context.eng,
+                    &self.https.?.buf[0], self.https.?.buf.len, 1);
+                if (bssl.c.br_ssl_server_reset(&self.https.?.context) != 1) {
+                    return error.br_ssl_server_reset;
+                }
 
-            // TODO ip6
-            const address = try std.net.Address.parseIp4(ip, port);
-            const sockFlags = std.os.SOCK.STREAM | std.os.SOCK.CLOEXEC | std.os.SOCK.NONBLOCK;
-            const proto = if (address.any.family == std.os.AF.UNIX) @as(u32, 0) else std.os.IPPROTO.TCP;
+                engine = &self.https.?.context.eng;
+            }
 
-            self.sockfd = try std.os.socket(address.any.family, sockFlags, proto);
+            self.active.store(true, .Release);
+            errdefer self.active.store(false, .Release);
+            self.stream = net_io.Stream.init(sockfd, engine);
+            self.address = address;
+            self.thread = try std.Thread.spawn(.{}, handleRequestWrapper, .{self, allocator});
+            self.thread.detach();
+        }
+
+        fn handleRequestWrapper(self: *Self, allocator: std.mem.Allocator) void
+        {
+            self.handleRequest(allocator) catch |err| {
+                std.log.warn("handleRequest error {}", .{err});
+            };
+        }
+
+        fn handleRequest(self: *Self, allocator: std.mem.Allocator) !void
+        {
+            var buf: [4098]u8 = undefined;
+
             defer {
-                std.os.closeSocket(self.sockfd);
+                self.active.store(false, .Release);
+                std.os.closeSocket(self.stream.sockfd);
             }
-            try std.os.setsockopt(
-                self.sockfd,
-                std.os.SOL.SOCKET,
-                std.os.SO.REUSEADDR, 
-                &std.mem.toBytes(@as(c_int, 1))
-            );
-
-            var socklen = address.getOsSockLen();
-            try std.os.bind(self.sockfd, &address.any, socklen);
-            const kernelBacklog = 128;
-            try std.os.listen(self.sockfd, kernelBacklog);
-            try std.os.getsockname(self.sockfd, &self.listenAddress.any, &socklen);
-
-            self.listening.store(true, .Release);
-
-            while (true) {
-                if (!self.listening.load(.Acquire)) {
-                    break;
-                }
-
-                var pollFds = [_]std.os.pollfd {
-                    .{
-                        .fd = self.sockfd,
-                        .events = POLL_EVENTS,
-                        .revents = undefined,
-                    },
-                };
-                const timeout = 500; // milliseconds, TODO make configurable
-                const pollResult = try std.os.poll(&pollFds, timeout);
-                if (pollResult == 0) {
-                    continue;
-                }
-
-                var acceptedAddress: std.net.Address = undefined;
-                var addrLen: std.os.socklen_t = @sizeOf(std.net.Address);
-                const fd = std.os.accept(
-                    self.sockfd,
-                    &acceptedAddress.any,
-                    &addrLen,
-                    std.os.SOCK.CLOEXEC | std.os.SOCK.NONBLOCK
-                ) catch |err| {
-                    switch (err) {
-                        std.os.AcceptError.WouldBlock => {
-                            continue;
-                        },
-                        else => {
-                            std.log.err("accept error {}", .{err});
-                        },
-                    }
-                    continue;
-                };
-                defer std.os.closeSocket(fd);
-
-                var context: bssl.c.br_ssl_server_context = undefined;
-                var engine: ?*bssl.c.br_ssl_engine_context = null;
-                if (self.httpsState) |_| {
-                    bssl.c.br_ssl_server_init_full_rsa(
-                        &context,
-                        &self.httpsState.?.chain.chain[0], self.httpsState.?.chain.chain.len,
-                        &self.httpsState.?.key.rsaKey);
-                    bssl.c.br_ssl_engine_set_buffer(
-                        &context.eng,
-                        &self.httpsState.?.buf[0], self.httpsState.?.buf.len, 1);
-                    if (bssl.c.br_ssl_server_reset(&context) != 1) {
-                        return error.br_ssl_server_reset;
-                    }
-
-                    engine = &context.eng;
-                }
-
-                var stream = net_io.Stream.init(fd, engine);
-                defer stream.closeHttpsIfOpen() catch {};
-
-                self.handleRequest(acceptedAddress, stream) catch |err| {
-                    std.log.warn("handleRequest error {}", .{err});
-                };
-            }
-        }
-
-        pub fn isListening(self: *const Self) bool
-        {
-            return self.listening.load(.Acquire);
-        }
-
-        pub fn stop(self: *Self) void
-        {
-            if (!self.listening.load(.Acquire)) {
-                std.log.err("server stop while not listening", .{});
-            }
-
-            self.listening.store(false, .Release);
-
-            // wait for listen to exit
-            while (self.listenExited.load(.Acquire)) {}
-        }
-
-        fn handleRequest(self: *Self, address: std.net.Address, stream: net_io.Stream) !void
-        {
-            _ = address;
 
             var request: Request = undefined;
             var requestLoaded = false;
             defer {
                 if (requestLoaded) {
-                    request.deinit(self.allocator);
+                    request.deinit(allocator);
                 }
             }
             var parsedHeader = false;
-            var header = std.ArrayList(u8).init(self.allocator);
+            var header = std.ArrayList(u8).init(allocator);
             defer header.deinit();
-            var body = std.ArrayList(u8).init(self.allocator);
+            var body = std.ArrayList(u8).init(allocator);
             defer body.deinit();
             var contentLength: usize = 0;
             while (true) {
                 const timeout = 500; // milliseconds, TODO make configurable
-                const pollResult = try stream.pollIn(timeout);
+                const pollResult = try self.stream.pollIn(timeout);
                 if (pollResult == 0) {
                     continue;
                 }
 
-                const n = stream.read(self.buf) catch |err| switch (err) {
-                    std.os.ReadError.WouldBlock => {
+                const n = self.stream.read(&buf) catch |err| switch (err) {
+                    error.WouldBlock => {
                         continue;
                     },
                     else => {
@@ -290,12 +210,12 @@ pub fn Server(comptime UserDataType: type) type
                     break;
                 }
 
-                const bytes = self.buf[0..n];
+                const bytes = buf[0..n];
                 if (!parsedHeader) {
                     try header.appendSlice(bytes);
                     if (std.mem.indexOf(u8, header.items, "\r\n\r\n")) |ind| {
                         const headerLength = ind + 4;
-                        try request.loadHeaderData(header.items[0..headerLength], self.allocator);
+                        try request.loadHeaderData(header.items[0..headerLength], allocator);
                         requestLoaded = true;
                         contentLength = http.getContentLength(request) catch |err| blk: {
                             switch (err) {
@@ -328,44 +248,217 @@ pub fn Server(comptime UserDataType: type) type
                 return error.ContentLengthMismatch;
             }
 
-            self.callback(self.userData, &request, stream) catch |err| {
+            self.callback(self.userData, &request, self.stream.writer()) catch |err| {
                 return err;
             };
 
-            try stream.flush();
+            try self.stream.flush();
         }
     };
+
+    const ServerType = struct {
+        allocator: std.mem.Allocator,
+        callback: CallbackType,
+        userData: UserDataType,
+        listening: std.atomic.Atomic(bool),
+        listenExited: std.atomic.Atomic(bool),
+        sockfd: std.os.socket_t,
+        listenAddress: std.net.Address,
+        connections: []Connection,
+        httpsState: ?HttpsState,
+
+        const Self = @This();
+
+        /// Server request callback type.
+        /// Don't return errors for plain application-specific stuff you can handle thru HTTP codes.
+        /// Errors should be used only for IO failures, tests, or other very special situations.
+        pub const CallbackType = CallbackType;
+
+        pub fn init(
+            callback: CallbackType,
+            userData: UserDataType,
+            httpsOptions: ?HttpsOptions,
+            allocator: std.mem.Allocator) !Self
+        {
+            var self = Self {
+                .allocator = allocator,
+                .callback = callback,
+                .userData = userData,
+                .listening = std.atomic.Atomic(bool).init(false),
+                .listenExited = std.atomic.Atomic(bool).init(true),
+                .sockfd = undefined,
+                .listenAddress = undefined,
+                .connections = try allocator.alloc(Connection, 1024),
+                .httpsState = null,
+            };
+            errdefer allocator.free(self.connections);
+
+            if (httpsOptions) |options| {
+                self.httpsState = HttpsState {
+                    .chain = try bssl.crt.Chain.init(options.certChainFileData, allocator),
+                    .key = try bssl.key.Key.init(options.privateKeyFileData, allocator),
+                };
+            }
+
+            for (self.connections) |_, i| {
+                self.connections[i] = try Connection.init(callback, userData, self.httpsState != null, allocator);
+            }
+
+            return self;
+        }
+
+        pub fn deinit(self: *Self) void
+        {
+            if (self.listening.load(.Acquire)) {
+                std.log.err("server deinit called without stop", .{});
+            }
+
+            for (self.connections) |_, i| {
+                self.connections[i].deinit(self.allocator);
+            }
+            self.allocator.free(self.connections);
+
+            if (self.httpsState) |_| {
+                self.httpsState.?.chain.deinit(self.allocator);
+                self.httpsState.?.key.deinit(self.allocator);
+            }
+        }
+
+        pub fn listen(self: *Self, ip: []const u8, port: u16) !void
+        {
+            self.listenExited.store(false, .Release);
+            defer self.listenExited.store(true, .Release);
+
+            // TODO ip6
+            const address = try std.net.Address.parseIp4(ip, port);
+            const sockFlags = std.os.SOCK.STREAM | std.os.SOCK.CLOEXEC | std.os.SOCK.NONBLOCK;
+            const proto = if (address.any.family == std.os.AF.UNIX) @as(u32, 0) else std.os.IPPROTO.TCP;
+
+            self.sockfd = try std.os.socket(address.any.family, sockFlags, proto);
+            defer std.os.closeSocket(self.sockfd);
+            try std.os.setsockopt(
+                self.sockfd,
+                std.os.SOL.SOCKET,
+                std.os.SO.REUSEADDR, 
+                &std.mem.toBytes(@as(c_int, 1))
+            );
+
+            var socklen = address.getOsSockLen();
+            try std.os.bind(self.sockfd, &address.any, socklen);
+            const kernelBacklog = 128;
+            try std.os.listen(self.sockfd, kernelBacklog);
+            try std.os.getsockname(self.sockfd, &self.listenAddress.any, &socklen);
+
+            self.listening.store(true, .Release);
+
+            while (true) {
+                if (!self.listening.load(.Acquire)) {
+                    break;
+                }
+
+                var pollFds = [_]std.os.pollfd {
+                    .{
+                        .fd = self.sockfd,
+                        .events = POLL_EVENTS,
+                        .revents = undefined,
+                    },
+                };
+                const timeout = 100; // milliseconds, TODO make configurable
+                const pollResult = try std.os.poll(&pollFds, timeout);
+                if (pollResult == 0) {
+                    continue;
+                }
+
+                var acceptedAddress: std.net.Address = undefined;
+                var addrLen: std.os.socklen_t = @sizeOf(std.net.Address);
+                const fd = std.os.accept(
+                    self.sockfd,
+                    &acceptedAddress.any,
+                    &addrLen,
+                    std.os.SOCK.CLOEXEC | std.os.SOCK.NONBLOCK
+                ) catch |err| {
+                    switch (err) {
+                        std.os.AcceptError.WouldBlock => {},
+                        else => {
+                            std.log.err("accept error {}", .{err});
+                        },
+                    }
+                    continue;
+                };
+
+                var slot: ?usize = null;
+                while (slot == null) {
+                    slot = self.findConnectionSlot();
+                    std.log.debug("Waiting for connection slot", .{});
+                }
+
+                // TODO use cheaper allocator
+                self.connections[slot.?].load(fd, acceptedAddress, self.httpsState, self.allocator) catch |err| {
+                    std.log.err("connection load error {}", .{err});
+                };
+            }
+        }
+
+        pub fn isListening(self: *const Self) bool
+        {
+            return self.listening.load(.Acquire);
+        }
+
+        pub fn stop(self: *Self) void
+        {
+            if (!self.listening.load(.Acquire)) {
+                std.log.err("server stop while not listening", .{});
+            }
+
+            self.listening.store(false, .Release);
+
+            // wait for listen to exit
+            while (self.listenExited.load(.Acquire)) {}
+        }
+
+        fn findConnectionSlot(self: *Self) ?usize
+        {
+            for (self.connections) |_, i| {
+                if (!self.connections[i].active.load(.Acquire)) {
+                    return i;
+                }
+            }
+            return null;
+        }
+    };
+
+    return ServerType;
 }
 
-pub fn writeCode(stream: net_io.Stream, code: http.Code) !void
+pub fn writeCode(writer: Writer, code: http.Code) !void
 {
     const versionString = http.versionToString(http.Version.v1_1);
     try std.fmt.format(
-        stream,
+        writer,
         "{s} {} {s}\r\n",
         .{versionString, @enumToInt(code), http.getCodeMessage(code)}
     );
 }
 
-pub fn writeHeader(stream: net_io.Stream, header: http.Header) !void
+pub fn writeHeader(writer: Writer, header: http.Header) !void
 {
-    try std.fmt.format(stream, "{s}: {s}\r\n", .{header.name, header.value});
+    try std.fmt.format(writer, "{s}: {s}\r\n", .{header.name, header.value});
 }
 
-pub fn writeContentLength(stream: net_io.Stream, contentLength: usize) !void
+pub fn writeContentLength(writer: Writer, contentLength: usize) !void
 {
-    try std.fmt.format(stream, "Content-Length: {}\r\n", .{contentLength});
+    try std.fmt.format(writer, "Content-Length: {}\r\n", .{contentLength});
 }
 
-pub fn writeContentType(stream: net_io.Stream, contentType: http.ContentType) !void
+pub fn writeContentType(writer: Writer, contentType: http.ContentType) !void
 {
     const string = http.contentTypeToString(contentType);
-    try writeHeader(stream, .{.name = "Content-Type", .value = string});
+    try writeHeader(writer, .{.name = "Content-Type", .value = string});
 }
 
-pub fn writeEndHeader(stream: net_io.Stream) !void
+pub fn writeEndHeader(writer: Writer) !void
 {
-    try stream.writeAll("\r\n");
+    try writer.writeAll("\r\n");
 }
 
 // TODO move to common.zig ?
@@ -474,7 +567,7 @@ pub fn getFileContentType(path: []const u8) ?http.ContentType
 }
 
 pub fn writeFileResponse(
-    stream: net_io.Stream,
+    writer: Writer,
     relativePath: []const u8,
     allocator: std.mem.Allocator) !void
 {
@@ -484,13 +577,13 @@ pub fn writeFileResponse(
     const fileData = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
     defer allocator.free(fileData);
 
-    try writeCode(stream, ._200);
-    try writeContentLength(stream, fileData.len);
+    try writeCode(writer, ._200);
+    try writeContentLength(writer, fileData.len);
     if (getFileContentType(relativePath)) |contentType| {
-        try writeContentType(stream, contentType);
+        try writeContentType(writer, contentType);
     }
-    try writeEndHeader(stream);
-    try stream.writeAll(fileData);
+    try writeEndHeader(writer);
+    try writer.writeAll(fileData);
 }
 
 fn uriHasFileExtension(uri: []const u8) bool
@@ -508,7 +601,7 @@ fn uriHasFileExtension(uri: []const u8) bool
 }
 
 pub fn serveStatic(
-    stream: net_io.Stream,
+    writer: Writer,
     uri: []const u8,
     comptime dir: []const u8,
     allocator: std.mem.Allocator) !void
@@ -548,5 +641,5 @@ pub fn serveStatic(
         .{uri[1..], suffix}
     );
     defer allocator.free(path);
-    try writeFileResponse(stream, path, allocator);
+    try writeFileResponse(writer, path, allocator);
 }

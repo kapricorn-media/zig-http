@@ -49,7 +49,7 @@ fn serverThreadStartAndWait(comptime UserDataType: type, s: *server.Server(UserD
 fn createHttpCodeCallback(comptime code: http.Code) server.Server(void).CallbackType
 {
     const Wrapper = struct {
-        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, writer: server.Writer) !void
         {
             try expectEqual(http.Method.Get, request.method);
             try expectEqualSlices(u8, "/", request.uri);
@@ -57,8 +57,8 @@ fn createHttpCodeCallback(comptime code: http.Code) server.Server(void).Callback
             try expectEqual(@as(usize, 0), request.body.len);
             try expectEqual(@as(usize, 0), try http.getContentLength(request));
 
-            try server.writeCode(stream, code);
-            try server.writeEndHeader(stream);
+            try server.writeCode(writer, code);
+            try server.writeEndHeader(writer);
         }
     };
     return Wrapper.callback;
@@ -71,10 +71,10 @@ test "HTTPS GET / not trusted"
     var allocator = gpa.allocator();
 
     const Wrapper = struct {
-        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, writer: server.Writer) !void
         {
             // Request shouldn't go through
-            _ = request; _ = stream;
+            _ = request; _ = writer;
             try expect(false);
         }
     };
@@ -144,7 +144,7 @@ test "GET / all codes, no data"
 fn createHttpUriCallback(comptime uri: []const u8, comptime response: []const u8) server.Server(void).CallbackType
 {
     const Wrapper = struct {
-        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, writer: server.Writer) !void
         {
             try expectEqual(http.Method.Get, request.method);
             try expectEqual(http.Version.v1_1, request.version);
@@ -152,13 +152,13 @@ fn createHttpUriCallback(comptime uri: []const u8, comptime response: []const u8
             try expectEqual(@as(usize, 0), try http.getContentLength(request));
 
             if (std.mem.eql(u8, request.uri, uri)) {
-                try server.writeCode(stream, ._200);
-                try server.writeContentLength(stream, response.len);
-                try server.writeEndHeader(stream);
-                try stream.writeAll(response);
+                try server.writeCode(writer, ._200);
+                try server.writeContentLength(writer, response.len);
+                try server.writeEndHeader(writer);
+                try writer.writeAll(response);
             } else {
-                try server.writeCode(stream, ._404);
-                try server.writeEndHeader(stream);
+                try server.writeCode(writer, ._404);
+                try server.writeEndHeader(writer);
             }
         }
     };
@@ -231,7 +231,7 @@ test "GET different URIs"
 fn createDataCallback(comptime in: []const u8, comptime out: []const u8) server.Server(void).CallbackType
 {
     const Wrapper = struct {
-        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, writer: server.Writer) !void
         {
             try expectEqual(http.Method.Post, request.method);
             try expectEqualSlices(u8, "/", request.uri);
@@ -239,10 +239,10 @@ fn createDataCallback(comptime in: []const u8, comptime out: []const u8) server.
             try expectEqualSlices(u8, in, request.body);
             try expectEqual(in.len, try http.getContentLength(request));
 
-            try server.writeCode(stream, ._200);
-            try server.writeContentLength(stream, out.len);
-            try server.writeEndHeader(stream);
-            try stream.writeAll(out);
+            try server.writeCode(writer, ._200);
+            try server.writeContentLength(writer, out.len);
+            try server.writeEndHeader(writer);
+            try writer.writeAll(out);
         }
     };
     return Wrapper.callback;
@@ -347,7 +347,7 @@ fn testCustomHeaders(https: bool, allocator: std.mem.Allocator) !void
     };
 
     const Wrapper = struct {
-        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, writer: server.Writer) !void
         {
             try expectEqual(http.Method.Get, request.method);
             try expectEqualSlices(u8, "/", request.uri);
@@ -366,11 +366,11 @@ fn testCustomHeaders(https: bool, allocator: std.mem.Allocator) !void
                 try expectEqual(@as(?[]const u8, null), http.getHeader(request, header.name));
             }
 
-            try server.writeCode(stream, ._200);
+            try server.writeCode(writer, ._200);
             for (responseHeaders) |header| {
-                try server.writeHeader(stream, header);
+                try server.writeHeader(writer, header);
             }
-            try server.writeEndHeader(stream);
+            try server.writeEndHeader(writer);
         }
     };
 
@@ -426,7 +426,7 @@ fn testStatic(https: bool, allocator: std.mem.Allocator) !void
     };
 
     const Wrapper = struct {
-        fn callback(state: *const State, request: *const server.Request, stream: server.Stream) !void
+        fn callback(state: *const State, request: *const server.Request, writer: server.Writer) !void
         {
             try expectEqual(http.Method.Get, request.method);
             try expectEqualSlices(u8, "/localhost.crt", request.uri);
@@ -434,7 +434,7 @@ fn testStatic(https: bool, allocator: std.mem.Allocator) !void
             try expectEqual(@as(usize, 0), request.body.len);
             try expectEqual(@as(usize, 0), try http.getContentLength(request));
 
-            try server.serveStatic(stream, request.uri, "test", state.allocator);
+            try server.serveStatic(writer, request.uri, "test", state.allocator);
         }
     };
 
@@ -489,7 +489,7 @@ fn testQueryParams(https: bool, allocator: std.mem.Allocator) !void
     const uriFull = uri ++ queryString;
 
     const Wrapper = struct {
-        fn callback(_: void, request: *const server.Request, stream: server.Stream) !void
+        fn callback(_: void, request: *const server.Request, writer: server.Writer) !void
         {
             try expectEqual(http.Method.Get, request.method);
             try expectEqualSlices(u8, uriFull, request.uriFull);
@@ -503,8 +503,8 @@ fn testQueryParams(https: bool, allocator: std.mem.Allocator) !void
                 try expectEqualSlices(u8, params[i].value, request.queryParams[i].value);
             }
 
-            try server.writeCode(stream, ._200);
-            try server.writeEndHeader(stream);
+            try server.writeCode(writer, ._200);
+            try server.writeEndHeader(writer);
         }
     };
 
