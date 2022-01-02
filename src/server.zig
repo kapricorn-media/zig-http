@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 const bssl = @import("bearssl");
@@ -5,8 +6,8 @@ const http = @import("http-common");
 
 const net_io = @import("net_io.zig");
 
-const POLL_EVENTS = std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.OUT | std.os.POLL.ERR |
-    std.os.POLL.HUP | std.os.POLL.NVAL;
+const POLL_EVENTS = if (builtin.os.tag == .windows) std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL | std.os.POLL.WRNORM | std.os.POLL.WRBAND | std.os.POLL.RDNORM | std.os.POLL.RDBAND
+    else std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.OUT | std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL;
 
 pub const Writer = net_io.Stream.Writer;
 
@@ -105,6 +106,11 @@ pub fn Server(comptime UserDataType: type) type
             https: bool,
             allocator: std.mem.Allocator) !Self
         {
+            // Ignore SIGPIPE
+            var sa = std.mem.zeroes(std.os.Sigaction);
+            sa.handler.sigaction = std.os.SIG.IGN;
+            std.os.sigaction(std.os.SIG.PIPE, &sa, null);
+
             var self = Self {
                 .active = std.atomic.Atomic(bool).init(false),
                 .callback = callback,

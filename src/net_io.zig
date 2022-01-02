@@ -1,9 +1,12 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 const bssl = @import("bearssl");
 
-const POLL_IN = std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL;
-const POLL_OUT = std.os.POLL.OUT | std.os.POLL.PRI | std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL;
+const POLL_IN = if (builtin.os.tag == .windows) std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL | std.os.POLL.RDNORM | std.os.POLL.RDBAND
+    else std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL;
+const POLL_OUT = if (builtin.os.tag == .windows) std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL | std.os.POLL.WRNORM | std.os.POLL.WRBAND
+    else std.os.POLL.OUT | std.os.POLL.PRI | std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL;
 
 pub const Stream = struct {
     sockfd: std.os.socket_t,
@@ -221,22 +224,6 @@ pub const Stream = struct {
 
     fn rawWrite(self: Self, buf: []const u8) (std.os.WriteError || std.os.PollError)!usize
     {
-        var pollFds = [_]std.os.pollfd {
-            .{
-                .fd = self.sockfd,
-                .events = POLL_OUT,
-                .revents = undefined,
-            },
-        };
-        // TODO is this slow?
-        const pollResult = try std.os.poll(&pollFds, 0);
-        if (pollResult == 0) {
-            return error.WouldBlock;
-        }
-        if ((pollFds[0].revents & std.os.POLL.OUT) == 0) {
-            return error.BrokenPipe;
-        }
-
         return std.os.write(self.sockfd, buf);
     }
 };
