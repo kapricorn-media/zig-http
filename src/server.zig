@@ -578,7 +578,15 @@ pub fn writeFileResponse(
     allocator: std.mem.Allocator) !void
 {
     const cwd = std.fs.cwd();
-    const file = try cwd.openFile(relativePath, .{});
+    const file = cwd.openFile(relativePath, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            try writeCode(writer, ._404);
+            try writeContentLength(writer, 0);
+            try writeEndHeader(writer);
+            return;
+        },
+        else => return err,
+    };
     defer file.close();
     const fileData = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
     defer allocator.free(fileData);
