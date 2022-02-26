@@ -71,7 +71,47 @@ pub const Response = struct
 
         try http.readHeaders(self, &it);
 
-        self.body = it.rest();
+        const contentLengthString = http.getHeader(self, "Content-Length");
+        if (contentLengthString) |cl| {
+            const contentLength = try std.fmt.parseUnsigned(u64, cl, 10);
+            self.body = it.rest();
+            if (contentLength != self.body.len) {
+                return error.BadContentLength;
+            }
+        } else {
+            const transferEncoding = http.getHeader(self, "Transfer-Encoding");
+            if (transferEncoding) |te| {
+                if (std.mem.eql(u8, te, "chunked")) {
+                    var chunkData = it.rest();
+                    var chunkIt = std.mem.split(u8, chunkData, "\r\n");
+                    var bodySet = false;
+                    while (true) {
+                        const chunkLenStr = chunkIt.next() orelse return error.NoChunkLength;
+                        const chunkLen = try std.fmt.parseUnsigned(u64, chunkLenStr, 16);
+                        const body = chunkIt.next() orelse return error.NoChunkBody;
+                        if (body.len != chunkLen) {
+                            return error.BadChunkLength;
+                        }
+                        if (chunkLen == 0) {
+                            break;
+                        }
+                        self.body = body;
+                        if (bodySet) {
+                            return error.MoreThanOneChunk;
+                        }
+                        bodySet = true;
+                    }
+                    const chunkRest = chunkIt.rest();
+                    if (chunkRest.len != 0) {
+                        return error.ChunkTrailingData;
+                    }
+                } else {
+                    return error.UnsupportedTransferEncoding;
+                }
+            } else {
+                return error.NoContentLength;
+            }
+        }
     }
 };
 
