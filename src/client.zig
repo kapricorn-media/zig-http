@@ -109,7 +109,7 @@ pub const Response = struct
                     return error.UnsupportedTransferEncoding;
                 }
             } else {
-                return error.NoContentLength;
+                self.body.len = 0;
             }
         }
     }
