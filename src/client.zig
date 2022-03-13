@@ -34,14 +34,112 @@ pub const RequestError = error {
 
 pub const Response = struct
 {
+    allocator: std.mem.Allocator,
     version: http.Version,
     code: http.Code,
     message: []const u8,
-    headersBuf: [http.MAX_HEADERS]http.Header,
     headers: []http.Header,
     body: []const u8,
 
     const Self = @This();
+
+    pub fn init(data: []const u8, allocator: std.mem.Allocator) !Self
+    {
+        var self = Self {
+            .allocator = allocator,
+            .version = undefined,
+            .code = undefined,
+            .message = &.{},
+            .headers = &.{},
+            .body = &.{},
+        };
+        errdefer self.deinit();
+
+        var it = std.mem.split(u8, data, "\r\n");
+        const first = it.next() orelse {
+            return error.NoFirstLine;
+        };
+        var itFirst = std.mem.split(u8, first, " ");
+        const versionString = itFirst.next() orelse return error.NoVersion;
+        self.version = http.stringToVersion(versionString) orelse return error.UnknownVersion;
+        const codeString = itFirst.next() orelse return error.NoCode;
+        const codeU32 = try std.fmt.parseUnsigned(u32, codeString, 10);
+        self.code = http.intToCode(codeU32) orelse return error.UnknownCode;
+        const message = itFirst.rest();
+        if (message.len > 0) {
+            self.message = try allocator.dupe(u8, message);
+        }
+
+        try http.readHeaders(&self, &it, allocator);
+
+        const contentLengthString = http.getHeader(self, "Content-Length");
+        if (contentLengthString) |cl| {
+            const contentLength = try std.fmt.parseUnsigned(u64, cl, 10);
+            const body = it.rest();
+            if (contentLength != body.len) {
+                return error.BadContentLength;
+            }
+            if (body.len > 0) {
+                self.body = try allocator.dupe(u8, body);
+            }
+        } else {
+            const transferEncoding = http.getHeader(self, "Transfer-Encoding");
+            if (transferEncoding) |te| {
+                if (std.mem.eql(u8, te, "chunked")) {
+                    var body = std.ArrayList(u8).init(allocator);
+                    defer body.deinit();
+                    var chunk = it.rest();
+                    var chunkIt = std.mem.split(u8, chunk, "\r\n");
+                    while (true) {
+                        const chunkLenStr = chunkIt.next() orelse return error.NoChunkLength;
+                        const chunkLen = try std.fmt.parseUnsigned(u64, chunkLenStr, 16);
+                        const chunkData = chunkIt.next() orelse return error.NoChunkBody;
+                        if (chunkData.len != chunkLen) {
+                            return error.BadChunkLength;
+                        }
+                        if (chunkLen == 0) {
+                            break;
+                        }
+                        try body.appendSlice(chunkData);
+                    }
+                    const chunkRest = chunkIt.rest();
+                    if (chunkRest.len != 0) {
+                        return error.ChunkTrailingData;
+                    }
+                    if (body.items.len > 0) {
+                        self.body = body.toOwnedSlice();
+                    }
+                } else {
+                    return error.UnsupportedTransferEncoding;
+                }
+            } else {
+                // no content length or transfer encoding. leave body as default (empty).
+            }
+        }
+
+        return self;
+    }
+
+    pub fn deinit(self: Self) void
+    {
+        if (self.message.len > 0) {
+            self.allocator.free(self.message);
+        }
+        if (self.headers.len > 0) {
+            for (self.headers) |h| {
+                if (h.name.len > 0) {
+                    self.allocator.free(h.name);
+                }
+                if (h.value.len > 0) {
+                    self.allocator.free(h.value);
+                }
+            }
+            self.allocator.free(self.headers);
+        }
+        if (self.body.len > 0) {
+            self.allocator.free(self.body);
+        }
+    }
 
     /// For string formatting, easy printing/debugging.
     pub fn format(self: Self, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void
@@ -53,66 +151,6 @@ pub const Response = struct
             .{self.version, self.code, self.message, self.body.len}
         );
     }
-
-    fn load(self: *Self, data: []const u8) !void
-    {
-        var it = std.mem.split(u8, data, "\r\n");
-
-        const first = it.next() orelse {
-            return error.NoFirstLine;
-        };
-        var itFirst = std.mem.split(u8, first, " ");
-        const versionString = itFirst.next() orelse return error.NoVersion;
-        self.version = http.stringToVersion(versionString) orelse return error.UnknownVersion;
-        const codeString = itFirst.next() orelse return error.NoCode;
-        const codeU32 = try std.fmt.parseUnsigned(u32, codeString, 10);
-        self.code = http.intToCode(codeU32) orelse return error.UnknownCode;
-        self.message = itFirst.rest();
-
-        try http.readHeaders(self, &it);
-
-        const contentLengthString = http.getHeader(self, "Content-Length");
-        if (contentLengthString) |cl| {
-            const contentLength = try std.fmt.parseUnsigned(u64, cl, 10);
-            self.body = it.rest();
-            if (contentLength != self.body.len) {
-                return error.BadContentLength;
-            }
-        } else {
-            const transferEncoding = http.getHeader(self, "Transfer-Encoding");
-            if (transferEncoding) |te| {
-                if (std.mem.eql(u8, te, "chunked")) {
-                    var chunkData = it.rest();
-                    var chunkIt = std.mem.split(u8, chunkData, "\r\n");
-                    var bodySet = false;
-                    while (true) {
-                        const chunkLenStr = chunkIt.next() orelse return error.NoChunkLength;
-                        const chunkLen = try std.fmt.parseUnsigned(u64, chunkLenStr, 16);
-                        const body = chunkIt.next() orelse return error.NoChunkBody;
-                        if (body.len != chunkLen) {
-                            return error.BadChunkLength;
-                        }
-                        if (chunkLen == 0) {
-                            break;
-                        }
-                        self.body = body;
-                        if (bodySet) {
-                            return error.MoreThanOneChunk;
-                        }
-                        bodySet = true;
-                    }
-                    const chunkRest = chunkIt.rest();
-                    if (chunkRest.len != 0) {
-                        return error.ChunkTrailingData;
-                    }
-                } else {
-                    return error.UnsupportedTransferEncoding;
-                }
-            } else {
-                self.body.len = 0;
-            }
-        }
-    }
 };
 
 pub fn request(
@@ -123,9 +161,7 @@ pub fn request(
     uri: []const u8,
     headers: ?[]const http.Header,
     body: ?[]const u8,
-    allocator: std.mem.Allocator,
-    outData: *std.ArrayList(u8),
-    outResponse: *Response) RequestError!void
+    allocator: std.mem.Allocator) RequestError!Response
 {
     var tcpStream = std.net.tcpConnectToHost(allocator, hostname, port) catch |err| {
         std.log.err("tcpConnectToHost failed {}", .{err});
@@ -186,11 +222,11 @@ pub fn request(
     stream.flush() catch return RequestError.WriteError;
 
     const initialCapacity = 4096;
-    outData.* = std.ArrayList(u8).initCapacity(allocator, initialCapacity) catch |err| {
+    var data = std.ArrayList(u8).initCapacity(allocator, initialCapacity) catch |err| {
         std.log.err("ArrayList initCapacity error {}", .{err});
         return RequestError.AllocError;
     };
-    errdefer outData.deinit();
+    defer data.deinit();
     var buf: [4096]u8 = undefined;
     while (true) {
         const readBytes = stream.read(&buf) catch |err| switch (err) {
@@ -201,12 +237,12 @@ pub fn request(
             break;
         }
 
-        outData.appendSlice(buf[0..@intCast(usize, readBytes)]) catch {
+        data.appendSlice(buf[0..@intCast(usize, readBytes)]) catch {
             return RequestError.AllocError;
         };
     }
 
-    outResponse.load(outData.items) catch return RequestError.ResponseError;
+    return Response.init(data.items, allocator) catch return RequestError.ResponseError;
 }
 
 pub fn get(
@@ -215,33 +251,27 @@ pub fn get(
     hostname: [:0]const u8,
     uri: []const u8,
     headers: ?[]const http.Header,
-    allocator: std.mem.Allocator,
-    outData: *std.ArrayList(u8),
-    outResponse: *Response) RequestError!void
+    allocator: std.mem.Allocator) RequestError!Response
 {
-    try request(.Get, https, port, hostname, uri, headers, null, allocator, outData, outResponse);
+    return request(.Get, https, port, hostname, uri, headers, null, allocator);
 }
 
 pub fn httpGet(
     hostname: [:0]const u8,
     uri: []const u8,
     headers: ?[]const http.Header,
-    allocator: std.mem.Allocator,
-    outData: *std.ArrayList(u8),
-    outResponse: *Response) RequestError!void
+    allocator: std.mem.Allocator) RequestError!Response
 {
-    try get(false, 80, hostname, uri, headers, allocator, outData, outResponse);
+    return get(false, 80, hostname, uri, headers, allocator);
 }
 
 pub fn httpsGet(
     hostname: [:0]const u8,
     uri: []const u8,
     headers: ?[]const http.Header,
-    allocator: std.mem.Allocator,
-    outData: *std.ArrayList(u8),
-    outResponse: *Response) RequestError!void
+    allocator: std.mem.Allocator) RequestError!Response
 {
-    try get(true, 443, hostname, uri, headers, allocator, outData, outResponse);
+    return get(true, 443, hostname, uri, headers, allocator);
 }
 
 pub fn post(
@@ -251,11 +281,9 @@ pub fn post(
     uri: []const u8,
     headers: ?[]const http.Header,
     body: ?[]const u8,
-    allocator: std.mem.Allocator,
-    outData: *std.ArrayList(u8),
-    outResponse: *Response) RequestError!void
+    allocator: std.mem.Allocator) RequestError!Response
 {
-    try request(.Post, https, port, hostname, uri, headers, body, allocator, outData, outResponse);
+    return request(.Post, https, port, hostname, uri, headers, body, allocator);
 }
 
 pub fn httpPost(
@@ -263,11 +291,9 @@ pub fn httpPost(
     uri: []const u8,
     headers: ?[]const http.Header,
     body: ?[]const u8,
-    allocator: std.mem.Allocator,
-    outData: *std.ArrayList(u8),
-    outResponse: *Response) RequestError!void
+    allocator: std.mem.Allocator) RequestError!Response
 {
-    try post(false, 80, hostname, uri, headers, body, allocator, outData, outResponse);
+    return post(false, 80, hostname, uri, headers, body, allocator);
 }
 
 pub fn httpsPost(
@@ -275,11 +301,9 @@ pub fn httpsPost(
     uri: []const u8,
     headers: ?[]const http.Header,
     body: ?[]const u8,
-    allocator: std.mem.Allocator,
-    outData: *std.ArrayList(u8),
-    outResponse: *Response) RequestError!void
+    allocator: std.mem.Allocator) RequestError!Response
 {
-    try post(true, 443, hostname, uri, headers, body, allocator, outData, outResponse);
+    return post(true, 443, hostname, uri, headers, body, allocator);
 }
 
 const HttpsState = struct {

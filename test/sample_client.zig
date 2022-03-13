@@ -44,10 +44,8 @@ pub fn main() !void
         std.log.info("Registered root CAs from file {s}", .{crtPath});
     }
 
-    var data: std.ArrayList(u8) = undefined;
-    var response: client.Response = undefined;
-    try client.get(https, port, host, uri, null, allocator, &data, &response);
-    defer data.deinit();
+    const response = try client.get(https, port, host, uri, null, allocator);
+    defer response.deinit();
 
     std.log.info("{}", .{response});
 }
