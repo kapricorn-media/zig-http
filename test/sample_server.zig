@@ -41,7 +41,7 @@ pub fn main() !void
         allocator: std.mem.Allocator,
     };
     const Wrapper = struct {
-        fn callback(state: *const State, request: *const server.Request, writer: server.Writer) !void
+        fn callback(state: *const State, request: server.Request, writer: server.Writer) !void
         {
             std.log.info("{}", .{request});
             try server.serveStatic(writer, request.uri, ".", state.allocator);
