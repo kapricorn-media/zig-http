@@ -92,7 +92,7 @@ pub const HttpsOptions = struct {
 
 const HttpsState = struct {
     chain: bssl.crt.Chain,
-    key: bssl.key.Key,
+    key: bssl.key.PrivateKey,
 };
 
 pub fn Server(comptime UserDataType: type) type
@@ -326,7 +326,7 @@ pub fn Server(comptime UserDataType: type) type
             if (httpsOptions) |options| {
                 self.httpsState = HttpsState {
                     .chain = try bssl.crt.Chain.init(options.certChainFileData, allocator),
-                    .key = try bssl.key.Key.init(options.privateKeyFileData, allocator),
+                    .key = try bssl.key.PrivateKey.initFromPem(options.privateKeyFileData, allocator),
                 };
             }
 
