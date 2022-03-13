@@ -58,8 +58,8 @@ pub fn build(b: *std.build.Builder) void
     testBoth.linkLibC();
 
     const runTests = b.step("test", "Run library tests");
-    // runTests.dependOn(&testClient.step);
-    // runTests.dependOn(&testCommon.step);
+    runTests.dependOn(&testClient.step);
+    runTests.dependOn(&testCommon.step);
     // runTests.dependOn(&testServer.step);
     runTests.dependOn(&testBoth.step);
 }
