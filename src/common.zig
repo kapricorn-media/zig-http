@@ -236,9 +236,24 @@ pub fn getContentLength(reqOrRes: anytype) ContentLengthError!usize
     return std.fmt.parseUnsigned(usize, string, 10) catch return error.InvalidContentLength;
 }
 
-pub fn readHeaders(reqOrRes: anytype, headerIt: *std.mem.SplitIterator(u8)) !void
+pub fn readHeaders(
+    reqOrRes: anytype,
+    headerIt: *std.mem.SplitIterator(u8),
+    allocator: std.mem.Allocator) !void
 {
-    var n: usize = 0;
+    var arrayList = std.ArrayList(Header).init(allocator);
+    errdefer {
+        for (arrayList.items) |h| {
+            if (h.name.len > 0) {
+                allocator.free(h.name);
+            }
+            if (h.value.len > 0) {
+                allocator.free(h.value);
+            }
+        }
+    }
+    defer arrayList.deinit();
+
     while (true) {
         const header = headerIt.next() orelse {
             return error.UnexpectedEndOfHeader;
@@ -248,14 +263,21 @@ pub fn readHeaders(reqOrRes: anytype, headerIt: *std.mem.SplitIterator(u8)) !voi
         }
 
         var itHeader = std.mem.split(u8, header, ":");
-        reqOrRes.headersBuf[n].name = itHeader.next() orelse {
+        const newHeader = try arrayList.addOne();
+        newHeader.name = &.{};
+        newHeader.value = &.{};
+        const name = itHeader.next() orelse {
             return error.HeaderMissingName;
         };
-        const v = itHeader.rest();
-        reqOrRes.headersBuf[n].value = std.mem.trimLeft(u8, v, " ");
-        n += 1;
+        if (name.len > 0) {
+            newHeader.name = try allocator.dupe(u8, name);
+        }
+        const value = std.mem.trimLeft(u8, itHeader.rest(), " ");
+        if (value.len > 0) {
+            newHeader.value = try allocator.dupe(u8, value);
+        }
     }
-    reqOrRes.headers = reqOrRes.headersBuf[0..n];
+    reqOrRes.headers = arrayList.toOwnedSlice();
 }
 
 pub const QueryParamError = error {

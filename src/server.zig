@@ -20,7 +20,6 @@ pub const Request = struct {
     queryParamsBuf: [http.MAX_QUERY_PARAMS]http.QueryParam,
     queryParams: []http.QueryParam,
     version: http.Version,
-    headersBuf: [http.MAX_HEADERS]http.Header,
     headers: []http.Header,
     body: []const u8,
 
@@ -52,11 +51,26 @@ pub const Request = struct {
         const versionString = itFirst.rest();
         self.version = http.stringToVersion(versionString) orelse return error.UnknownHttpVersion;
 
-        try http.readHeaders(self, &it);
+        try http.readHeaders(self, &it, allocator);
 
         const rest = it.rest();
         if (rest.len != 0) {
             return error.TrailingStuff;
+        }
+    }
+
+    fn unloadHeaderData(self: *Self, allocator: std.mem.Allocator) void
+    {
+        if (self.headers.len > 0) {
+            for (self.headers) |h| {
+                if (h.name.len > 0) {
+                    allocator.free(h.name);
+                }
+                if (h.value.len > 0) {
+                    allocator.free(h.value);
+                }
+            }
+            allocator.free(self.headers);
         }
     }
 
@@ -85,7 +99,7 @@ pub fn Server(comptime UserDataType: type) type
 {
     const CallbackType = fn(
         userData: UserDataType,
-        request: *const Request,
+        request: Request,
         writer: Writer
     ) anyerror!void;
 
@@ -184,7 +198,17 @@ pub fn Server(comptime UserDataType: type) type
                 std.os.closeSocket(self.stream.sockfd);
             }
 
-            var request: Request = undefined;
+            var request = Request {
+                .method = undefined,
+                .uriFull = undefined,
+                .uri = undefined,
+                .queryParamsBuf = undefined,
+                .queryParams = undefined,
+                .version = undefined,
+                .headers = &.{},
+                .body = &.{},
+            };
+            defer request.unloadHeaderData(allocator);
             var requestLoaded = false;
             defer {
                 if (requestLoaded) {
@@ -254,7 +278,7 @@ pub fn Server(comptime UserDataType: type) type
                 return error.ContentLengthMismatch;
             }
 
-            self.callback(self.userData, &request, self.stream.writer()) catch |err| {
+            self.callback(self.userData, request, self.stream.writer()) catch |err| {
                 return err;
             };
 
