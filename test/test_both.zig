@@ -217,7 +217,7 @@ test "GET different URIs"
 
     inline for (uris) |uri| {
         try testUri(uri, false, allocator);
-        // try testUri(uri, true, allocator);
+        try testUri(uri, true, allocator);
     }
 }
 
@@ -302,7 +302,7 @@ test "POST / 200 data in/out"
 
     inline for (params) |p| {
         try testDataInOut(p.in, p.out, false, allocator);
-        // try testDataInOut(p.in, p.out, true, allocator);
+        try testDataInOut(p.in, p.out, true, allocator);
     }
 }
 
@@ -405,7 +405,7 @@ test "GET / 200 custom headers"
     var allocator = gpa.allocator();
 
     try testCustomHeaders(false, allocator);
-    // try testCustomHeaders(true, allocator);
+    try testCustomHeaders(true, allocator);
 }
 
 fn testStatic(https: bool, allocator: std.mem.Allocator) !void
@@ -460,7 +460,7 @@ test "serve static"
     var allocator = gpa.allocator();
 
     try testStatic(false, allocator);
-    // try testStatic(true, allocator);
+    try testStatic(true, allocator);
 }
 
 fn testQueryParams(https: bool, allocator: std.mem.Allocator) !void
@@ -524,5 +524,5 @@ test "query params"
     var allocator = gpa.allocator();
 
     try testQueryParams(false, allocator);
-    // try testQueryParams(true, allocator);
+    try testQueryParams(true, allocator);
 }
