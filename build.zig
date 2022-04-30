@@ -97,6 +97,7 @@ pub fn addLibClient(
             "-Wall",
             "-Werror",
             "-Wextra",
+            "-Wno-deprecated-declarations",
         });
         step.linkFramework("Foundation");
         step.linkFramework("Security");
