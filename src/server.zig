@@ -638,6 +638,13 @@ fn uriHasFileExtension(uri: []const u8) bool
     return dotAfterSlash;
 }
 
+pub fn writeRedirectResponse(writer: Writer, redirectUrl: []const u8) !void
+{
+    try writeCode(writer, ._301);
+    try writeHeader(writer, .{.name = "Location", .value = redirectUrl});
+    try writeEndHeader(writer);
+}
+
 pub fn serveStatic(
     writer: Writer,
     uri: []const u8,
