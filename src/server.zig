@@ -585,6 +585,8 @@ pub fn getFileContentType(path: []const u8) ?http.ContentType
         .{.extension = ".asf", .contentType = .VideoXMsAsf},
         .{.extension = ".avi", .contentType = .VideoXMsvideo},
         .{.extension = ".m4v", .contentType = .VideoXM4v},
+        // newer (added by me)
+        .{.extension = ".wasm", .contentType = .ApplicationWasm},
     };
 
     const extension = std.fs.path.extension(path);
