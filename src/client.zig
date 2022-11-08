@@ -336,7 +336,7 @@ const HttpsState = struct {
             &self.rawAnchors[0], self.rawAnchors.len
         );
         bssl.c.br_ssl_engine_set_buffer(&self.sslContext.eng, &self.buf[0], self.buf.len, 1);
-        const result = bssl.c.br_ssl_client_reset(&self.sslContext, hostname, 0);
+        const result = bssl.c.br_ssl_client_reset(&self.sslContext, @ptrCast([*c]const u8, hostname), 0);
         if (result != 1) {
             return error.br_ssl_client_reset;
         }

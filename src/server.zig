@@ -97,10 +97,7 @@ const HttpsState = struct {
 
 pub fn Server(comptime UserDataType: type) type
 {
-    // Server request callback type.
-    // Don't return errors for plain application-specific stuff you can handle thru HTTP codes.
-    // Errors should be used only for IO failures, tests, or other very special situations.
-    const CallbackType = *const fn(
+    const CBType = *const fn(
         userData: UserDataType,
         request: Request,
         writer: Writer
@@ -108,7 +105,7 @@ pub fn Server(comptime UserDataType: type) type
 
     const Connection = struct {
         active: std.atomic.Atomic(bool),
-        callback: CallbackType,
+        callback: CBType,
         userData: UserDataType,
         https: ?ConnectionHttps,
         stream: net_io.Stream,
@@ -118,7 +115,7 @@ pub fn Server(comptime UserDataType: type) type
         const Self = @This();
 
         fn init(
-            callback: CallbackType,
+            callback: CBType,
             userData: UserDataType,
             https: bool,
             allocator: std.mem.Allocator) !Self
@@ -294,7 +291,7 @@ pub fn Server(comptime UserDataType: type) type
 
     const ServerType = struct {
         allocator: std.mem.Allocator,
-        callback: CallbackType,
+        callback: CBType,
         userData: UserDataType,
         listening: std.atomic.Atomic(bool),
         listenExited: std.atomic.Atomic(bool),
@@ -305,8 +302,13 @@ pub fn Server(comptime UserDataType: type) type
 
         const Self = @This();
 
+        /// Server request callback type.
+        /// Don't return errors for plain application-specific stuff you can handle thru HTTP codes.
+        /// Errors should be used only for IO failures, tests, or other very special situations.
+        pub const CallbackType = CBType;
+
         pub fn init(
-            callback: CallbackType,
+            callback: CBType,
             userData: UserDataType,
             httpsOptions: ?HttpsOptions,
             allocator: std.mem.Allocator) !Self
