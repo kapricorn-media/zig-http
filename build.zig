@@ -81,7 +81,7 @@ pub fn addLibClient(
 {
     const pkg = std.build.Pkg {
         .name = "http-client",
-        .path = .{
+        .source = .{
             .path = dir ++ "/src/client.zig",
         },
         .dependencies = &[_]std.build.Pkg {
@@ -92,7 +92,7 @@ pub fn addLibClient(
     step.addPackage(pkg);
     const targetOs = if (target.os_tag) |tag| tag else builtin.os.tag;
     if (targetOs == .macos) {
-        step.addIncludeDir(dir ++ "/src");
+        step.addIncludePath(dir ++ "/src");
         step.addCSourceFile(dir ++ "/src/macos_certs.m", &[_][]const u8{
             "-Wall",
             "-Werror",
@@ -112,7 +112,7 @@ pub fn addLibServer(
     _ = target;
     const pkg = std.build.Pkg {
         .name = "http-server",
-        .path = .{
+        .source = .{
             .path = dir ++ "/src/server.zig",
         },
         .dependencies = &[_]std.build.Pkg {
@@ -127,7 +127,7 @@ fn getPkgCommon(comptime dir: []const u8) std.build.Pkg
 {
     return .{
         .name = "http-common",
-        .path = .{
+        .source = .{
             .path = dir ++ "/src/common.zig",
         },
         .dependencies = null,

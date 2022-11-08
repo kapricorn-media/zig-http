@@ -97,7 +97,10 @@ const HttpsState = struct {
 
 pub fn Server(comptime UserDataType: type) type
 {
-    const CallbackType = fn(
+    // Server request callback type.
+    // Don't return errors for plain application-specific stuff you can handle thru HTTP codes.
+    // Errors should be used only for IO failures, tests, or other very special situations.
+    const CallbackType = *const fn(
         userData: UserDataType,
         request: Request,
         writer: Writer
@@ -121,9 +124,12 @@ pub fn Server(comptime UserDataType: type) type
             allocator: std.mem.Allocator) !Self
         {
             // Ignore SIGPIPE
-            var sa = std.mem.zeroes(std.os.Sigaction);
-            sa.handler.sigaction = std.os.SIG.IGN;
-            std.os.sigaction(std.os.SIG.PIPE, &sa, null);
+            var act = std.os.Sigaction{
+                .handler = .{ .handler = std.os.SIG.IGN },
+                .mask = std.os.empty_sigset,
+                .flags = 0,
+            };
+            try std.os.sigaction(std.os.SIG.PIPE, &act, null);
 
             var self = Self {
                 .active = std.atomic.Atomic(bool).init(false),
@@ -298,11 +304,6 @@ pub fn Server(comptime UserDataType: type) type
         httpsState: ?HttpsState,
 
         const Self = @This();
-
-        /// Server request callback type.
-        /// Don't return errors for plain application-specific stuff you can handle thru HTTP codes.
-        /// Errors should be used only for IO failures, tests, or other very special situations.
-        pub const CallbackType = CallbackType;
 
         pub fn init(
             callback: CallbackType,
