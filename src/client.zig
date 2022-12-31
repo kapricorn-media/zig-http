@@ -405,7 +405,8 @@ fn loadAnchorsFromOs(allocator: std.mem.Allocator) !bssl.crt.Anchors
             return anchors;
         },
         else => {
-            @compileError("Unsupported OS");
+            std.log.err("Windows HTTPS client is unsupported - empty certificate anchors");
+            return error.UnsupportedOS;
         },
     }
 }

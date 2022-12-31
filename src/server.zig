@@ -120,13 +120,15 @@ pub fn Server(comptime UserDataType: type) type
             https: bool,
             allocator: std.mem.Allocator) !Self
         {
-            // Ignore SIGPIPE
-            var act = std.os.Sigaction{
-                .handler = .{ .handler = std.os.SIG.IGN },
-                .mask = std.os.empty_sigset,
-                .flags = 0,
-            };
-            try std.os.sigaction(std.os.SIG.PIPE, &act, null);
+            if (builtin.os.tag != .windows) {
+                // Ignore SIGPIPE
+                var act = std.os.Sigaction{
+                    .handler = .{ .handler = std.os.SIG.IGN },
+                    .mask = std.os.empty_sigset,
+                    .flags = 0,
+                };
+                try std.os.sigaction(std.os.SIG.PIPE, &act, null);
+            }
 
             var self = Self {
                 .active = std.atomic.Atomic(bool).init(false),
@@ -418,6 +420,7 @@ pub fn Server(comptime UserDataType: type) type
                     }
                     continue;
                 };
+                errdefer std.os.closeSocket(fd);
 
                 var slot: ?usize = null;
                 while (slot == null) {
