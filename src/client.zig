@@ -107,7 +107,7 @@ pub const Response = struct
                         return error.ChunkTrailingData;
                     }
                     if (body.items.len > 0) {
-                        self.body = body.toOwnedSlice();
+                        self.body = try body.toOwnedSlice();
                     }
                 } else {
                     return error.UnsupportedTransferEncoding;

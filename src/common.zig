@@ -279,7 +279,7 @@ pub fn readHeaders(
             newHeader.value = try allocator.dupe(u8, value);
         }
     }
-    reqOrRes.headers = arrayList.toOwnedSlice();
+    reqOrRes.headers = try arrayList.toOwnedSlice();
 }
 
 pub const QueryParamError = error {
@@ -333,7 +333,7 @@ fn hexDigitToNumber(digit: u8) !u8
     }
 }
 
-pub const UriDecodeError = error {
+pub const UriDecodeError = std.mem.Allocator.Error || error {
     BadPercentSequence,
     AllocError,
 };
