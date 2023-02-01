@@ -73,9 +73,10 @@ fn testQueryParamsFail(
 
 test "query params"
 {
-    try testQueryParamsSuccess("/", "/", &.{});
-    try testQueryParamsSuccess("/testing", "/testing", &.{});
-    try testQueryParamsSuccess("/something&very=weird", "/something&very=weird", &.{});
+    const emptyParams = [0]http.QueryParam{};
+    try testQueryParamsSuccess("/", "/", &emptyParams);
+    try testQueryParamsSuccess("/testing", "/testing", &emptyParams);
+    try testQueryParamsSuccess("/something&very=weird", "/something&very=weird", &emptyParams);
     try testQueryParamsSuccess("/testing?param1=value1", "/testing", &.{
         .{.name = "param1", .value = "value1"},
     });

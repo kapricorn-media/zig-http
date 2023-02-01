@@ -3,7 +3,7 @@ const std = @import("std");
 
 const zig_bearssl_build = @import("deps/zig-bearssl/build.zig");
 
-pub fn build(b: *std.build.Builder) void
+pub fn build(b: *std.build.Builder) !void
 {
     const mode = b.standardReleaseOptions();
     const target = b.standardTargetOptions(.{});
@@ -11,8 +11,8 @@ pub fn build(b: *std.build.Builder) void
     const sampleClient = b.addExecutable("sample_client", "test/sample_client.zig");
     sampleClient.setBuildMode(mode);
     sampleClient.setTarget(target);
-    addLibCommon(sampleClient, target, ".");
-    addLibClient(sampleClient, target, ".");
+    try addLibCommon(sampleClient, target, ".");
+    try addLibClient(sampleClient, target, ".");
     zig_bearssl_build.addLib(sampleClient, target, "deps/zig-bearssl");
     sampleClient.linkLibC();
     sampleClient.install();
@@ -20,8 +20,8 @@ pub fn build(b: *std.build.Builder) void
     const sampleServer = b.addExecutable("sample_server", "test/sample_server.zig");
     sampleServer.setBuildMode(mode);
     sampleServer.setTarget(target);
-    addLibCommon(sampleServer, target, ".");
-    addLibServer(sampleServer, target, ".");
+    try addLibCommon(sampleServer, target, ".");
+    try addLibServer(sampleServer, target, ".");
     zig_bearssl_build.addLib(sampleServer, target, "deps/zig-bearssl");
     sampleServer.linkLibC();
     sampleServer.install();
@@ -29,31 +29,31 @@ pub fn build(b: *std.build.Builder) void
     const testClient = b.addTest("test/test_client.zig");
     testClient.setBuildMode(mode);
     testClient.setTarget(target);
-    addLibCommon(testClient, target, ".");
-    addLibClient(testClient, target, ".");
+    try addLibCommon(testClient, target, ".");
+    try addLibClient(testClient, target, ".");
     zig_bearssl_build.addLib(testClient, target, "deps/zig-bearssl");
     testClient.linkLibC();
 
     const testCommon = b.addTest("test/test_common.zig");
     testCommon.setBuildMode(mode);
     testCommon.setTarget(target);
-    addLibCommon(testCommon, target, ".");
+    try addLibCommon(testCommon, target, ".");
     testCommon.linkLibC();
 
     const testServer = b.addTest("test/test_server.zig");
     testServer.setBuildMode(mode);
     testServer.setTarget(target);
-    addLibCommon(testServer, target, ".");
-    addLibServer(testServer, target, ".");
+    try addLibCommon(testServer, target, ".");
+    try addLibServer(testServer, target, ".");
     zig_bearssl_build.addLib(testServer, target, "deps/zig-bearssl");
     testServer.linkLibC();
 
     const testBoth = b.addTest("test/test_both.zig");
     testBoth.setBuildMode(mode);
     testBoth.setTarget(target);
-    addLibCommon(testBoth, target, ".");
-    addLibClient(testBoth, target, ".");
-    addLibServer(testBoth, target, ".");
+    try addLibCommon(testBoth, target, ".");
+    try addLibClient(testBoth, target, ".");
+    try addLibServer(testBoth, target, ".");
     zig_bearssl_build.addLib(testBoth, target, "deps/zig-bearssl");
     testBoth.linkLibC();
 
@@ -67,17 +67,17 @@ pub fn build(b: *std.build.Builder) void
 pub fn addLibCommon(
     step: *std.build.LibExeObjStep,
     target: std.zig.CrossTarget,
-    comptime dir: []const u8) void
+    comptime dir: []const u8) !void
 {
     _ = target;
-    const pkg = getPkgCommon(dir);
+    const pkg = try getPkgCommon(dir, step.builder.allocator);
     step.addPackage(pkg);
 }
 
 pub fn addLibClient(
     step: *std.build.LibExeObjStep,
     target: std.zig.CrossTarget,
-    comptime dir: []const u8) void
+    comptime dir: []const u8) !void
 {
     const pkg = std.build.Pkg {
         .name = "http-client",
@@ -85,7 +85,7 @@ pub fn addLibClient(
             .path = dir ++ "/src/client.zig",
         },
         .dependencies = &[_]std.build.Pkg {
-            getPkgCommon(dir),
+            try getPkgCommon(dir, step.builder.allocator),
             zig_bearssl_build.getPkg(dir ++ "/deps/zig-bearssl"),
         },
     };
@@ -107,7 +107,7 @@ pub fn addLibClient(
 pub fn addLibServer(
     step: *std.build.LibExeObjStep,
     target: std.zig.CrossTarget,
-    comptime dir: []const u8) void
+    comptime dir: []const u8) !void
 {
     _ = target;
     const pkg = std.build.Pkg {
@@ -116,20 +116,23 @@ pub fn addLibServer(
             .path = dir ++ "/src/server.zig",
         },
         .dependencies = &[_]std.build.Pkg {
-            getPkgCommon(dir),
+            try getPkgCommon(dir, step.builder.allocator),
             zig_bearssl_build.getPkg(dir ++ "/deps/zig-bearssl"),
         },
     };
     step.addPackage(pkg);
 }
 
-fn getPkgCommon(comptime dir: []const u8) std.build.Pkg
+fn getPkgCommon(comptime dir: []const u8, allocator: std.mem.Allocator) !std.build.Pkg
 {
+    var deps = try allocator.alloc(std.build.Pkg, 1);
+    deps[0] = zig_bearssl_build.getPkg(dir ++ "/deps/zig-bearssl");
+
     return .{
         .name = "http-common",
         .source = .{
             .path = dir ++ "/src/common.zig",
         },
-        .dependencies = null,
+        .dependencies = deps,
     };
 }

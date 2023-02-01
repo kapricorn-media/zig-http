@@ -3,8 +3,8 @@ const std = @import("std");
 
 const bssl = @import("bearssl");
 const http = @import("http-common");
+const net_io = http.net_io;
 
-const net_io = @import("net_io.zig");
 const macos_certs = @cImport(@cInclude("macos_certs.h"));
 
 var _anchorsOverride: ?bssl.crt.Anchors = null;
@@ -400,7 +400,7 @@ fn loadAnchorsFromOs(allocator: std.mem.Allocator) !bssl.crt.Anchors
             }
 
             var anchors = bssl.crt.Anchors {
-                .anchors = state.anchors.toOwnedSlice(),
+                .anchors = try state.anchors.toOwnedSlice(),
             };
             return anchors;
         },

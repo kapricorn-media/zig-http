@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const net_io = @import("net_io.zig");
+
 pub const MAX_HEADERS = 8 * 1024;
 pub const MAX_QUERY_PARAMS = 8 * 1024;
 

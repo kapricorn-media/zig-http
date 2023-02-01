@@ -3,8 +3,7 @@ const std = @import("std");
 
 const bssl = @import("bearssl");
 const http = @import("http-common");
-
-const net_io = @import("net_io.zig");
+const net_io = http.net_io;
 
 const POLL_EVENTS = if (builtin.os.tag == .windows) std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL | std.os.POLL.WRNORM | std.os.POLL.WRBAND | std.os.POLL.RDNORM | std.os.POLL.RDBAND
     else std.os.POLL.IN | std.os.POLL.PRI | std.os.POLL.OUT | std.os.POLL.ERR | std.os.POLL.HUP | std.os.POLL.NVAL;
