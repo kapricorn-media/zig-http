@@ -281,7 +281,7 @@ pub fn readHeaders(
             newHeader.value = try allocator.dupe(u8, value);
         }
     }
-    reqOrRes.headers = try arrayList.toOwnedSlice();
+    reqOrRes.headers = arrayList.toOwnedSlice();
 }
 
 pub const QueryParamError = error {

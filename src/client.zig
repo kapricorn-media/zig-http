@@ -107,7 +107,7 @@ pub const Response = struct
                         return error.ChunkTrailingData;
                     }
                     if (body.items.len > 0) {
-                        self.body = try body.toOwnedSlice();
+                        self.body = body.toOwnedSlice();
                     }
                 } else {
                     return error.UnsupportedTransferEncoding;
@@ -400,7 +400,7 @@ fn loadAnchorsFromOs(allocator: std.mem.Allocator) !bssl.crt.Anchors
             }
 
             var anchors = bssl.crt.Anchors {
-                .anchors = try state.anchors.toOwnedSlice(),
+                .anchors = state.anchors.toOwnedSlice(),
             };
             return anchors;
         },
