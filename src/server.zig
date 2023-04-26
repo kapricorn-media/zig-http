@@ -609,15 +609,7 @@ pub fn writeFileResponse(
     allocator: std.mem.Allocator) !void
 {
     const cwd = std.fs.cwd();
-    const file = cwd.openFile(relativePath, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            try writeCode(writer, ._404);
-            try writeContentLength(writer, 0);
-            try writeEndHeader(writer);
-            return;
-        },
-        else => return err,
-    };
+    const file = try cwd.openFile(relativePath, .{});
     defer file.close();
     const fileData = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
     defer allocator.free(fileData);
@@ -659,17 +651,17 @@ pub fn serveStatic(
     allocator: std.mem.Allocator) !void
 {
     if (uri.len == 0) {
-        return error.emptyUri;
+        return error.BadUri;
     }
     if (uri.len > 1 and uri[1] == '/') {
-        return error.absolutePathInUri;
+        return error.BadUri;
     }
 
     var prevWasDot = false;
     for (uri) |c| {
         if (c == '.') {
             if (prevWasDot) {
-                return error.doubleDotInUri;
+                return error.BadUri;
             }
             prevWasDot = true;
         } else {
